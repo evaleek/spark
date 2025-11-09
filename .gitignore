@@ -1,0 +1,8 @@
+# https://github.com/ziglang/zig/commit/b2588de6ccdfee87542e2bd18b74d3a14e349d95
+.zig-cache/
+zig-out/
+/release/
+/debug/
+/build/
+/build-*/
+/docgen_tmp/
