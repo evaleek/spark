@@ -2,6 +2,7 @@ const null_context: h.XContext = 0;
 var context_key: h.XContext = null_context;
 
 display: *h.Display,
+xrr_available: bool,
 err: u8,
 
 pub const ConnectionError = common.ConnectionError;
@@ -68,6 +69,15 @@ pub fn connect(client: *Client) ConnectionError!void {
             h.XCNOENT => unreachable,
             else => unreachable,
         }
+    }
+
+    {
+        var event_base: c_int = 0;
+        var error_base: c_int = 0;
+        client.xrr_available = lib.XRRQueryExtension(
+            client.display,
+            &event_base, &error_base,
+        ) == h.True;
     }
 }
 
@@ -183,6 +193,117 @@ pub fn closeWindow(client: *Client, window: *Window) void {
     window.close(client);
 }
 
+pub fn iterateDisplays(client: Client) !Display.Iterator {
+    return Display.iterate(client);
+}
+
+pub const Display = struct {
+    pub const Info = common.DisplayInfo;
+
+    pub fn iterate(client: Client) !Iterator {
+        if (client.xrr_available) {
+            const root: h.Window = h.DefaultRootWindow(client.display);
+            const resources: *h.XRRScreenResources = lib.XRRGetScreenResources(
+                client.display, root,
+            ) orelse return error.Unavailable;
+
+            return Iterator{
+                .display = client.display,
+                .resources = resources,
+                .index = 0,
+            };
+        } else {
+            return error.Unavailable;
+        }
+    }
+
+    pub const Iterator = struct {
+        display: *h.Display,
+        resources: *h.XRRScreenResources,
+        index: usize,
+
+        /// Reference fields in the Info struct (e.g. `.name[]`)
+        /// have the same lifetime as the Iterator
+        /// and must be copied if needed beyond this method.
+        pub fn release(iter: *Iterator) void {
+            lib.XRRFreeScreenResources(iter.resources);
+            iter.* = undefined;
+        }
+
+        pub fn next(iter: *Iterator) ?Info {
+            return while (iter.index < iter.count()) {
+                defer iter.index += 1;
+
+                const output_info: *h.XRROutputInfo = lib.XRRGetOutputInfo(
+                    iter.display,
+                    iter.resources,
+                    iter.resources.outputs[iter.index],
+                ).?;
+
+                break Info{
+                    .active = output_info.connection == h.RR_Connected,
+                    .name = output_info.name[0..@intCast(output_info.nameLen)],
+                    .size = if (output_info.crtc != h.None) get_size: {
+                        const crtc_info: *h.XRRCrtcInfo = lib.XRRGetCrtcInfo(
+                            iter.display,
+                            iter.resources,
+                            output_info.crtc,
+                        ).?;
+                        defer lib.XRRFreeCrtcInfo(crtc_info);
+
+                        break :get_size .{
+                            .width_pixels = @intCast(crtc_info.width),
+                            .height_pixels = @intCast(crtc_info.height),
+                            .width_millimeters = output_info.mm_width,
+                            .height_millimeters = output_info.mm_height,
+                        };
+                    } else null,
+                };
+            } else null;
+        }
+
+        pub fn reset(iter: *Iterator) void {
+            iter.index = 0;
+        }
+
+        pub fn atIndex(iter: Iterator, index: usize) !Info {
+            if (index < iter.count()) {
+                const output_info: *h.XRROutputInfo = lib.XRRGetOutputInfo(
+                    iter.display,
+                    iter.resources,
+                    iter.resources.outputs[index],
+                ).?;
+
+                return Info{
+                    .active = output_info.connection == h.RR_Connected,
+                    .name = output_info.name[0..@intCast(output_info.nameLen)],
+                    .size = if (output_info.crtc != h.None) get_size: {
+                        const crtc_info: *h.XRRCrtcInfo = lib.XRRGetCrtcInfo(
+                            iter.display,
+                            iter.resources,
+                            output_info.crtc,
+                        ).?;
+                        defer lib.XRRFreeCrtcInfo(crtc_info);
+
+                        break :get_size .{
+                            .width_pixels = @intCast(crtc_info.width),
+                            .height_pixels = @intCast(crtc_info.height),
+                            .width_millimeters = output_info.mm_width,
+                            .height_millimeters = output_info.mm_height,
+                        };
+                    } else null,
+                };
+            } else {
+                return error.OutOfBounds;
+            }
+        }
+
+        pub fn count(iter: Iterator) usize {
+            return @intCast(iter.resources.noutput);
+        }
+    };
+};
+
 pub const Window = struct {
     handle: h.Window,
 
@@ -283,7 +404,7 @@ test "open and close window" {
             .width = 800,
             .height = 400,
         });
-        defer client.closeWindow(&window);
+        client.closeWindow(&window);
     } else {
         return error.SkipZigTest;
     }
@@ -295,6 +416,8 @@ const lib = if (build_options.x11_linked) struct {
 
     pub extern fn XFlush(display: *h.Display) callconv(.c) c_int;
     pub extern fn XSync(display: *h.Display, discard: h.Bool) callconv(.c) c_int;
+
+    pub extern fn XDefaultRootWindow(display: *h.Display) callconv(.c) h.Window;
 
     pub extern fn XSaveContext(
         display: *h.Display,
@@ -342,6 +465,34 @@ const lib = if (build_options.x11_linked) struct {
         display: *h.Display,
         w: h.Window,
     ) callconv(.c) c_int;
+
+    pub extern fn XRRQueryExtension(
+        dpy: *h.Display,
+        event_base_return: *c_int,
+        error_base_return: *c_int,
+    ) callconv(.c) h.Bool;
+
+    pub extern fn XRRGetScreenResources(
+        display: *h.Display,
+        window: h.Window,
+    ) callconv(.c) ?*h.XRRScreenResources;
+    pub extern fn XRRFreeScreenResources(
+        resources: *h.XRRScreenResources,
+    ) callconv(.c) void;
+
+    pub extern fn XRRGetOutputInfo(
+        dpy: *h.Display,
+        resources: *h.XRRScreenResources,
+        output: h.RROutput,
+    ) callconv(.c) ?*h.XRROutputInfo;
+    pub extern fn XRRGetCrtcInfo(
+        dpy: *h.Display,
+        resources: *h.XRRScreenResources,
+        crtc: h.RRCrtc,
+    ) callconv(.c) ?*h.XRRCrtcInfo;
+    pub extern fn XRRFreeCrtcInfo(
+        crtcInfo: *h.XRRCrtcInfo,
+    ) callconv(.c) void;
 } else @compileError("invalid reference to unlinked X11 library");
 
 const h = if (build_options.x11_linked) @import("x11")

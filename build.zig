@@ -45,6 +45,7 @@ pub fn build(b: *std.Build) void {
 
     if (link_x11 and !no_link) {
         mod.linkSystemLibrary("X11", .{ .needed = false });
+        mod.linkSystemLibrary("Xrandr", .{ .needed = false });
         const translate = b.addTranslateC(.{
             .root_source_file = b.path("src/x11/import.h"),
             .target = target,
