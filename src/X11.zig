@@ -239,6 +239,7 @@ pub const Display = struct {
                     iter.resources,
                     iter.resources.outputs[iter.index],
                 ).?;
+                // TODO free the info. needs refactor so user can see name reference
 
                 break Info{
                     .active = output_info.connection == h.RR_Connected,
@@ -273,6 +274,7 @@ pub const Display = struct {
                     iter.resources,
                     iter.resources.outputs[index],
                 ).?;
+                // TODO free the info. needs refactor so user can see name reference
 
                 return Info{
                     .active = output_info.connection == h.RR_Connected,
@@ -311,11 +313,120 @@ pub const Window = struct {
     pub const CreationError = common.WindowCreationError;
 
     pub fn open(window: *Window, client: *Client, options: CreationOptions) CreationError!void {
+        // The library assumes a single X11 screen
+        // (a modern machine that uses Xrandr for multiple monitor monitors).
+        // Maybe TODO enumerate possible Screens if Xrandr is unavailable
+
         const screen: c_int = h.DefaultScreen(client.display);
         const root: h.Window = h.RootWindow(client.display, screen);
 
+        // TODO inject as function
+        const x: common.ScreenPoints,
+        const y: common.ScreenPoints = display_origin: {
+            if (client.xrr_available) {
+                const resources: *h.XRRScreenResources = lib.XRRGetScreenResources(
+                    client.display, root,
+                ) orelse break :display_origin .{ 0, 0 };
+                defer lib.XRRFreeScreenResources(resources);
+
+                const outputs: []const h.RROutput =
+                    resources.outputs[0..@intCast(resources.noutput)];
+
+                if (options.display) |display_selection| {
+                    switch (display_selection) {
+                        .index => |index| {
+                            if (outputs.len > index) {
+                                const output_info: *h.XRROutputInfo = lib.XRRGetOutputInfo(
+                                    client.display,
+                                    resources,
+                                    outputs[index],
+                                ).?;
+                                defer lib.XRRFreeOutputInfo(output_info);
+
+                                if (output_info.crtc != h.None) {
+                                    const crtc_info: *h.XRRCrtcInfo = lib.XRRGetCrtcInfo(
+                                        client.display,
+                                        resources,
+                                        output_info.crtc,
+                                    ).?;
+                                    defer lib.XRRFreeCrtcInfo(crtc_info);
+
+                                    break :display_origin .{
+                                        @intCast(crtc_info.x),
+                                        @intCast(crtc_info.y),
+                                    };
+                                }
+                            }
+                        },
+
+                        .name => |select_name| {
+                            for (outputs) |output| {
+                                const output_info: *h.XRROutputInfo = lib.XRRGetOutputInfo(
+                                    client.display,
+                                    resources,
+                                    output,
+                                ).?;
+                                defer lib.XRRFreeOutputInfo(output_info);
+
+                                if (output_info.crtc != h.None) {
+                                    const crtc_info: *h.XRRCrtcInfo = lib.XRRGetCrtcInfo(
+                                        client.display,
+                                        resources,
+                                        output_info.crtc,
+                                    ).?;
+                                    defer lib.XRRFreeCrtcInfo(crtc_info);
+
+                                    const output_name: []const u8 =
+                                        output_info.name[0..@intCast(output_info.nameLen)];
+                                    if (mem.eql(u8, select_name, output_name)) {
+                                        break :display_origin .{
+                                            @intCast(crtc_info.x),
+                                            @intCast(crtc_info.y),
+                                        };
+                                    }
+                                }
+                            }
+                        },
+                    }
+
+                    return error.InvalidDisplay;
+                } else {
+                    const primary: h.RROutput = lib.XRRGetOutputPrimary(client.display, root);
+                    for (outputs) |output| {
+                        if (output == primary) {
+                            const output_info: *h.XRROutputInfo = lib.XRRGetOutputInfo(
+                                client.display,
+                                resources,
+                                output,
+                            ).?;
+                            defer lib.XRRFreeOutputInfo(output_info);
+
+                            if (output_info.crtc != h.None) {
+                                const crtc_info: *h.XRRCrtcInfo = lib.XRRGetCrtcInfo(
+                                    client.display,
+                                    resources,
+                                    output_info.crtc,
+                                ).?;
+                                defer lib.XRRFreeCrtcInfo(crtc_info);
+
+                                break :display_origin .{
+                                    @intCast(crtc_info.x),
+                                    @intCast(crtc_info.y),
+                                };
+                            }
+                        }
+                    }
+                    log.err("X11 primary output was not found in resource enumeration", .{});
+                    break :display_origin .{ 0, 0 };
+                }
+
+            } else {
+                break :display_origin .{ 0, 0 };
+            }
+        };
+
         var attributes = mem.zeroes(h.XSetWindowAttributes);
-        attributes.event_mask =
+        attributes.event_mask |=
             h.ExposureMask |
             h.KeyPressMask |
             h.KeyReleaseMask |
@@ -327,7 +438,8 @@ pub const Window = struct {
 
         window.handle = lib.XCreateWindow(
             client.display, root,
-            0, 0, options.width, options.height, 0,
+            x+options.origin_x, y+options.origin_y,
+            options.width, options.height, 0,
             h.CopyFromParent, h.InputOutput,
             @ptrFromInt(h.CopyFromParent),
             h.CWEventMask, &attributes,
@@ -480,11 +592,20 @@ const lib = if (build_options.x11_linked) struct {
         resources: *h.XRRScreenResources,
     ) callconv(.c) void;
 
+    pub extern fn XRRGetOutputPrimary(
+        dpy: *h.Display,
+        window: h.Window,
+    ) callconv(.c) h.RROutput;
+
     pub extern fn XRRGetOutputInfo(
         dpy: *h.Display,
         resources: *h.XRRScreenResources,
         output: h.RROutput,
     ) callconv(.c) ?*h.XRROutputInfo;
+    pub extern fn XRRFreeOutputInfo(
+        outputInfo: *h.XRROutputInfo,
+    ) callconv(.c) void;
+
     pub extern fn XRRGetCrtcInfo(
         dpy: *h.Display,
         resources: *h.XRRScreenResources,

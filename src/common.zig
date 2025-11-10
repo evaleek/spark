@@ -5,13 +5,29 @@ pub const ConnectionError = error{
 };
 
 pub const WindowCreationOptions = struct {
+    display: ?DisplaySelection = null,
     name: [:0]const u8,
-    width: u16,
-    height: u16,
+    width: ScreenPoints,
+    height: ScreenPoints,
+    /// Window left edge position relative to the left edge of the display
+    origin_x: ScreenPoints = 0,
+    /// Window top edge position relative to the top edge of the display
+    origin_y: ScreenPoints = 0,
+};
+
+pub const DisplaySelection = union(enum) {
+    /// Select the display by name as found from DisplayInfo
+    name: []const u8,
+    /// Select the display by the index it appeared when enumerating displays
+    index: u16,
 };
 
 pub const WindowCreationError = error{
     OutOfMemory,
+    /// The display selection was invalid,
+    /// or may have been invalidated since display enumeration.
+    /// Retrying with a `null` display selection will never return this error.
+    InvalidDisplay,
 };
 
 pub const DisplayInfo = struct {
@@ -21,8 +37,8 @@ pub const DisplayInfo = struct {
 };
 
 pub const DisplaySize = struct {
-    width_pixels: u16,
-    height_pixels: u16,
+    width_pixels: ScreenPoints,
+    height_pixels: ScreenPoints,
     /// The EDID size in millimeters,
     /// which may be missing, incorrect,
     /// or modified by the windowing environment for display scaling.
@@ -54,5 +70,7 @@ pub const DisplaySize = struct {
         }
     }
 };
+
+pub const ScreenPoints = u16;
 
 const std = @import("std");
