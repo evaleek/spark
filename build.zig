@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
 
     options.addOption(bool, "x11_linked", link_x11 and !no_link);
 
-    const mod = b.addModule("spark", .{
+    const mod = b.addModule("xwin", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
