@@ -1,9 +1,166 @@
-const null_context: h.XContext = 0;
-var context_key: h.XContext = null_context;
-
 display: *h.Display,
 xrr_available: bool,
+delete_window_atom: h.Atom,
 err: u8,
+
+/// Get the next pending event for all passed windows,
+/// or `null` if there are no more pending events.
+pub fn poll(client: Client, windows: []const *Window) ?Event {
+    // TODO invert this loop structure to the user
+    // so we don't call XPending many times in a poll loop
+
+    var pending = lib.XPending(client.display);
+    debug.assert(pending >= 0); // TODO confirm never negative
+
+    while (pending > 0) : (pending -= 1) {
+        const event: h.XEvent = get: {
+            // TODO needs to be zeroed or can be undefined?
+            var e = mem.zeroes(h.XEvent);
+            // TODO check this isn't returning something important
+            _ = lib.XNextEvent(client.display, &e);
+            break :get e;
+        };
+        if (client.processXEvent(event, windows)) |e| return e;
+    }
+
+    return null;
+}
+
+/// Get the next pending event for all passed windows,
+/// and block if there are not yet pending events.
+pub fn pollBlocking(client: Client, windows: []const *Window) Event {
+    while (true) {
+        const event: h.XEvent = get: {
+            // TODO needs to be zeroed or can be undefined?
+            var e = mem.zeroes(h.XEvent);
+            // TODO check this isn't returning something important
+            _ = lib.XNextEvent(client.display, &e);
+            break :get e;
+        };
+        if (client.processXEvent(event, windows)) |e| return e;
+    }
+}
+
+pub const Event = union(common.EventType) {
+    pub const Type = common.EventType;
+
+    pub const Close = struct {
+        window: *Window,
+    };
+
+    pub const Redraw = struct {
+        window: *Window,
+        x: ScreenCoordinates,
+        y: ScreenCoordinates,
+        width: ScreenPoints,
+        height: ScreenPoints,
+    };
+
+    pub const Resize = struct {
+        window: *Window,
+        x: ScreenCoordinates,
+        y: ScreenCoordinates,
+        width: ScreenPoints,
+        height: ScreenPoints,
+    };
+
+    pub const Reposition = struct {
+        window: *Window,
+        x: ScreenCoordinates,
+        y: ScreenCoordinates,
+    };
+
+
+    close: Close,
+    redraw: Redraw,
+    resize: Resize,
+    reposition: Reposition,
+};
+
+fn processXEvent(client: Client, e: h.XEvent, windows: []const *Window) ?Event {
+    // Linear search through possible windows may be inefficient
+    // but probably doesn't matter because there is rarely even more than one.
+    // needs profiling TODO
+
+    return switch (e.@"type") {
+        else => null,
+
+        h.Expose => .{ .redraw = .{
+            .window = for (windows) |w| {
+                if (w.handle == e.xexpose.window) break w;
+            } else return null,
+            .x = @intCast(e.xexpose.x),
+            .y = @intCast(e.xexpose.y),
+            .width = @intCast(e.xexpose.width),
+            .height = @intCast(e.xexpose.height),
+        }},
+
+        h.ConfigureNotify => conf_notif: {
+            const window = for (windows) |w| {
+                if (w.handle == e.xconfigure.window) break w;
+            } else return null;
+
+            const old_width = @atomicLoad(ScreenPoints, &window.width, .acquire);
+            const old_height = @atomicLoad(ScreenPoints, &window.height, .acquire);
+            const old_x = @atomicLoad(ScreenCoordinates, &window.x, .acquire);
+            const old_y = @atomicLoad(ScreenCoordinates, &window.y, .acquire);
+
+            const new_width: ScreenPoints = @intCast(e.xconfigure.width);
+            const new_height: ScreenPoints = @intCast(e.xconfigure.height);
+            const new_x: ScreenCoordinates = @intCast(e.xconfigure.x);
+            const new_y: ScreenCoordinates = @intCast(e.xconfigure.y);
+
+            @atomicStore(ScreenPoints, &window.width, new_width, .release);
+            @atomicStore(ScreenPoints, &window.height, new_height, .release);
+            @atomicStore(ScreenCoordinates, &window.x, new_x, .release);
+            @atomicStore(ScreenCoordinates, &window.y, new_y, .release);
+
+            if (new_width != old_width or new_height != old_height) {
+                break :conf_notif Event{ .resize = .{
+                    .window = window,
+                    .width = new_width,
+                    .height = new_height,
+                    .x = new_x,
+                    .y = new_y,
+                }};
+            } else if (new_x != old_x or new_y != old_y) {
+                break :conf_notif Event{ .reposition = .{
+                    .window = window,
+                    .x = new_x,
+                    .y = new_y,
+                }};
+            } else {
+                return null;
+            }
+        },
+
+        h.ClientMessage => msg: {
+            const window = for (windows) |w| {
+                if (w.handle == e.xclient.window) break w;
+            } else return null;
+
+            switch (e.xclient.format) {
+                8, 16 => return null,
+                32 => {
+                    if (e.xclient.data.l[0] == client.delete_window_atom) {
+                        break :msg Event{ .close = .{
+                            .window = window,
+                        }};
+                    } else {
+                        return null;
+                    }
+                },
+                else => unreachable,
+            }
+
+            // TODO drag and drop
+
+            // TODO clipboard
+        },
+
+        // TODO input
+    };
+}
 
 pub const ConnectionError = common.ConnectionError;
 
@@ -12,6 +169,7 @@ pub fn connect(client: *Client) ConnectionError!void {
     client.display = lib.XOpenDisplay(null) orelse return no_display: {
         // TODO I don't think this is a rigorous check
         // of all of the ways this could have failed
+        if (@import("builtin").target.os.tag == .windows) return error.HostDown;
         if (posix.getenv("DISPLAY")) |env_display| {
             if (env_display.len>0 and env_display[0] == ':') {
                 var path_buf = mem.zeroes([32]u8);
@@ -79,6 +237,15 @@ pub fn connect(client: *Client) ConnectionError!void {
             &event_base, &error_base,
         ) == h.True;
     }
+
+    client.delete_window_atom = lib.XInternAtom(client.display, "WM_DELETE_WINDOW", h.False);
+    switch (client.checkError()) {
+        h.Success => {},
+        h.BadAlloc => return error.OutOfMemory,
+        h.BadValue => unreachable, // TODO error or undefined?
+        else => unreachable,
+    }
+    debug.assert(client.delete_window_atom != h.None);
 }
 
 test "no context before set" {
@@ -181,16 +348,6 @@ fn onError(display: *h.Display, event: *h.XErrorEvent) callconv(.c) c_int {
     @atomicStore(@FieldType(Client, "err"), &client.err, event.error_code, .release);
 
     return 0;
-}
-
-pub fn openWindow(client: *Client, options: Window.CreationOptions) Window.CreationError!Window {
-    var window: Window = undefined;
-    try window.open(client, options);
-    return window;
-}
-
-pub fn closeWindow(client: *Client, window: *Window) void {
-    window.close(client);
 }
 
 pub fn iterateDisplays(client: Client) !Display.Iterator {
@@ -306,8 +463,22 @@ pub const Display = struct {
     };
 };
 
+pub fn openWindow(client: *Client, options: Window.CreationOptions) Window.CreationError!Window {
+    var window: Window = undefined;
+    try window.open(client, options);
+    return window;
+}
+
+pub fn closeWindow(client: *Client, window: *Window) void {
+    window.close(client);
+}
+
 pub const Window = struct {
     handle: h.Window,
+    x: ScreenCoordinates,
+    y: ScreenCoordinates,
+    width: ScreenPoints,
+    height: ScreenPoints,
 
     pub const CreationOptions = common.WindowCreationOptions;
     pub const CreationError = common.WindowCreationError;
@@ -321,8 +492,8 @@ pub const Window = struct {
         const root: h.Window = h.RootWindow(client.display, screen);
 
         // TODO inject as function
-        const x: common.ScreenPoints,
-        const y: common.ScreenPoints = display_origin: {
+        const x: ScreenCoordinates,
+        const y: ScreenCoordinates = display_origin: {
             if (client.xrr_available) {
                 const resources: *h.XRRScreenResources = lib.XRRGetScreenResources(
                     client.display, root,
@@ -416,7 +587,8 @@ pub const Window = struct {
                             }
                         }
                     }
-                    log.err("X11 primary output was not found in resource enumeration", .{});
+
+                    log.err("missing X11 primary output in output enumeration", .{});
                     break :display_origin .{ 0, 0 };
                 }
 
@@ -435,6 +607,11 @@ pub const Window = struct {
             h.PointerMotionMask |
             h.StructureNotifyMask
         ;
+
+        window.x = x+options.origin_x;
+        window.y = y+options.origin_y;
+        window.width = options.width;
+        window.height = options.height;
 
         window.handle = lib.XCreateWindow(
             client.display, root,
@@ -467,8 +644,22 @@ pub const Window = struct {
             h.BadWindow => unreachable,
             else => unreachable,
         }
+        errdefer _ = lib.XDestroyWindow(client.display, window.handle);
 
         _ = lib.XStoreName(client.display, window.handle, options.name.ptr);
+        switch (client.checkError()) {
+            h.Success => {},
+            h.BadAlloc => return error.OutOfMemory,
+            h.BadWindow => unreachable,
+            else => unreachable,
+        }
+
+        _ = lib.XSetWMProtocols(
+            client.display,
+            window.handle,
+            @ptrCast(&client.delete_window_atom),
+            1,
+        );
         switch (client.checkError()) {
             h.Success => {},
             h.BadAlloc => return error.OutOfMemory,
@@ -522,6 +713,9 @@ test "open and close window" {
     }
 }
 
+var context_key: h.XContext = null_context;
+const null_context: h.XContext = 0;
+
 const lib = if (build_options.x11_linked) struct {
     pub extern fn XOpenDisplay(display_name: ?[*:0]const u8) callconv(.c) ?*h.Display;
     pub extern fn XCloseDisplay(display: *h.Display) callconv(.c) c_int;
@@ -529,7 +723,16 @@ const lib = if (build_options.x11_linked) struct {
     pub extern fn XFlush(display: *h.Display) callconv(.c) c_int;
     pub extern fn XSync(display: *h.Display, discard: h.Bool) callconv(.c) c_int;
 
+    pub extern fn XPending(display: *h.Display) callconv(.c) c_int;
+    pub extern fn XNextEvent(display: *h.Display, *h.XEvent) callconv(.c) c_int;
+
     pub extern fn XDefaultRootWindow(display: *h.Display) callconv(.c) h.Window;
+
+    pub extern fn XInternAtom(
+        display: *h.Display,
+        atom_name: [*:0]const u8,
+        only_if_exists: h.Bool,
+    ) callconv(.c) h.Atom;
 
     pub extern fn XSaveContext(
         display: *h.Display,
@@ -577,6 +780,12 @@ const lib = if (build_options.x11_linked) struct {
         display: *h.Display,
         w: h.Window,
     ) callconv(.c) c_int;
+    pub extern fn XSetWMProtocols(
+        display: *h.Display,
+        w: h.Window,
+        protocols: [*]h.Atom,
+        count: c_int,
+    ) callconv(.c) h.Status;
 
     pub extern fn XRRQueryExtension(
         dpy: *h.Display,
@@ -620,6 +829,8 @@ const h = if (build_options.x11_linked) @import("x11")
     else @compileError("invalid reference to unlinked X11 headers");
 
 const Client = @This();
+const ScreenPoints = common.ScreenPoints;
+const ScreenCoordinates = common.ScreenCoordinates;
 
 const debug = std.debug;
 const testing = std.testing;

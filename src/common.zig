@@ -1,3 +1,10 @@
+pub const EventType = enum{
+    close,
+    redraw,
+    resize,
+    reposition,
+};
+
 pub const ConnectionError = error{
     OutOfMemory,
     HostDown,
@@ -10,9 +17,9 @@ pub const WindowCreationOptions = struct {
     width: ScreenPoints,
     height: ScreenPoints,
     /// Window left edge position relative to the left edge of the display
-    origin_x: ScreenPoints = 0,
+    origin_x: ScreenCoordinates = 0,
     /// Window top edge position relative to the top edge of the display
-    origin_y: ScreenPoints = 0,
+    origin_y: ScreenCoordinates = 0,
 };
 
 pub const DisplaySelection = union(enum) {
@@ -71,6 +78,7 @@ pub const DisplaySize = struct {
     }
 };
 
-pub const ScreenPoints = u16;
+pub const ScreenPoints = u32;
+pub const ScreenCoordinates = i32;
 
 const std = @import("std");
