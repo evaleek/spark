@@ -41,8 +41,8 @@ pub fn pollBlocking(client: Client, windows: []const *Window) Event {
     }
 }
 
-pub const Event = union(common.EventType) {
-    pub const Type = common.EventType;
+pub const Event = union(common.Event) {
+    pub const Type = common.Event;
 
     pub const Close = struct {
         window: *Window,
@@ -838,6 +838,6 @@ const log = std.log;
 const mem = std.mem;
 const posix = std.posix;
 
-const common = @import("common.zig");
+const common = @import("common");
 const build_options = @import("build_options");
 const std = @import("std");

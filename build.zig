@@ -1,53 +1,59 @@
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const link_x11 = b.option(bool, "x11", "Link the X11 system library")
+    const default_link_mode = b.option(
+        LinkMode,
+        "link-mode",
+        "Global backend library link mode (default: static)",
+    ) orelse LinkMode.static;
+    const no_link = b.option(
+        bool,
+        "no-link",
+        "Disallow linking any system libraries",
+    ) orelse false;
+
+    const link_x11 = !no_link and b.option(bool, "x11", "Link the X11 system library")
         orelse switch (target.result.os.tag) {
             .linux, .freebsd, .netbsd, .openbsd, .illumos => true,
             else => false,
         };
-    const no_link = b.option(bool, "nolink", "Prevent linking system libraries")
-        orelse false;
+    const link_x11_mode = b.option(
+        LinkMode,
+        "x11-link-mode",
+        "Override default link mode for X11",
+    ) orelse default_link_mode;
 
-    const manifest = @import("build.zig.zon");
-    const manifest_version: ?SemVer = SemVer.parse(manifest.version)
-        catch |err| version_failure: {
-            switch (err) {
-                error.InvalidVersion => log.err(
-                    "invalid version string \'{s}\' from build.zig.zon",
-                    .{ manifest.version },
-                ),
-                error.Overflow => log.err(
-                    "overflow while parsing version string of build.zig.zon",
-                    .{},
-                ),
-            }
-            break :version_failure null;
-        };
+    const zon = @import("build.zig.zon");
+    const zon_version: SemVer = try SemVer.parse(zon.version);
+    const zon_name: [:0]const u8 = @tagName(zon.name);
 
     const options = b.addOptions();
+    options.addOption([:0]const u8, "name", zon_name);
+    options.addOption(SemVer, "version", zon_version);
+    options.addOption(bool, "x11_linked", link_x11);
 
-    if (manifest_version) |version| options.addOption(
-        SemVer,
-        "version",
-        version,
-    );
-
-    options.addOption(bool, "x11_linked", link_x11 and !no_link);
-
-    const mod = b.addModule(manifest.name, .{
+    const mod = b.addModule(zon_name, .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
 
     mod.addOptions("build_options", options);
+    mod.addAnonymousImport("common", .{
+        .root_source_file = b.path("src/common.zig"),
+    });
 
-    if (link_x11 and !no_link) {
-        mod.linkSystemLibrary("X11", .{ .needed = false });
-        mod.linkSystemLibrary("Xrandr", .{ .needed = false });
+    if (link_x11) {
+        mod.linkSystemLibrary("X11", .{
+            .needed = false,
+            .preferred_link_mode = link_x11_mode,
+        });
+        mod.linkSystemLibrary("Xrandr", .{
+            .needed = false,
+            .preferred_link_mode = link_x11_mode,
+        });
         const translate = b.addTranslateC(.{
-            .root_source_file = b.path("src/x11/import.h"),
+            .root_source_file = b.path("src/X11/x11.h"),
             .target = target,
             .optimize = optimize,
         });
@@ -61,6 +67,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
 }
 
+const LinkMode = std.builtin.LinkMode;
 const SemVer = std.SemanticVersion;
 const log = std.log;
 const std = @import("std");

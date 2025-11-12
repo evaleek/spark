@@ -1,4 +1,4 @@
-pub const EventType = enum{
+pub const Event = enum{
     close,
     redraw,
     resize,
@@ -55,10 +55,9 @@ pub const DisplaySize = struct {
     /// or modified by the windowing environment for display scaling.
     height_millimeters: u64,
 
-    pub const mm_per_inch = 25.4;
-
     pub fn xPixelsPerInch(info: DisplayInfo) ?f64 {
-        if (info.width_millimeters > 0) {
+        const mm_per_inch = 25.4;
+        if (info.width_millimeters > 0 and info.width_pixels > 0) {
             const px: f64 = @floatFromInt(info.width_pixels);
             const mm: f64 = @floatFromInt(info.width_millimeters);
             return px * mm_per_inch / mm;
@@ -68,7 +67,8 @@ pub const DisplaySize = struct {
     }
 
     pub fn yPixelsPerInch(info: DisplayInfo) ?f64 {
-        if (info.height_millimeters > 0) {
+        const mm_per_inch = 25.4;
+        if (info.height_millimeters > 0 and info.height_pixels > 0) {
             const px: f64 = @floatFromInt(info.height_pixels);
             const mm: f64 = @floatFromInt(info.height_millimeters);
             return px * mm_per_inch / mm;

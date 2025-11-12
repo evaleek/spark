@@ -1,5 +1,7 @@
-pub const X11 = @import("X11.zig");
+pub const X11 = struct {
+    pub const Linked = @import("X11/Linked.zig");
+};
 
-test "submodule reference" {
-    _ = X11;
+test "reference decls" {
+    _ = X11.Linked;
 }
