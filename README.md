@@ -16,10 +16,10 @@ for a unified cross-platform interface.
 Partial implementation:
 
 - X11 (Linux/BSD)
+- Win32 (Windows)
 
 Planned implementation:
 
-- Win32 (Windows)
 - Wayland (Linux/BSD)
 - Cocoa (MacOS)
 - Consoles
