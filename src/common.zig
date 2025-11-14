@@ -1,8 +1,42 @@
-pub const Event = enum{
+// TODO
+pub const fallback_default_window_origin_x = 0;
+pub const fallback_default_window_origin_y = 0;
+pub const fallback_default_window_width = 800;
+pub const fallback_default_window_height = 600;
+
+pub const Message = enum {
     close,
     redraw,
     resize,
     reposition,
+};
+
+pub const Event = union(Message) {
+    close: Close,
+    redraw: Redraw,
+    resize: Resize,
+    reposition: Reposition,
+
+    pub const Close = void;
+
+    pub const Redraw = struct {
+        x: ScreenCoordinates,
+        y: ScreenCoordinates,
+        width: ScreenPoints,
+        height: ScreenPoints,
+    };
+
+    pub const Resize = struct {
+        x: ScreenCoordinates,
+        y: ScreenCoordinates,
+        width: ScreenPoints,
+        height: ScreenPoints,
+    };
+
+    pub const Reposition = struct {
+        x: ScreenCoordinates,
+        y: ScreenCoordinates,
+    };
 };
 
 pub const ConnectionError = error{
@@ -12,14 +46,14 @@ pub const ConnectionError = error{
 };
 
 pub const WindowCreationOptions = struct {
-    display: ?DisplaySelection = null,
     name: [:0]const u8,
-    width: ScreenPoints,
-    height: ScreenPoints,
+    width: ?ScreenPoints = null,
+    height: ?ScreenPoints = null,
     /// Window left edge position relative to the left edge of the display
-    origin_x: ScreenCoordinates = 0,
+    origin_x: ?ScreenCoordinates = null,
     /// Window top edge position relative to the top edge of the display
-    origin_y: ScreenCoordinates = 0,
+    origin_y: ?ScreenCoordinates = null,
+    display: ?DisplaySelection = null,
 };
 
 pub const DisplaySelection = union(enum) {
@@ -31,6 +65,8 @@ pub const DisplaySelection = union(enum) {
 
 pub const WindowCreationError = error{
     OutOfMemory,
+    /// The name exceeded the maximum length or was not valid UTF-8.
+    InvalidName,
     /// The display selection was invalid,
     /// or may have been invalidated since display enumeration.
     /// Retrying with a `null` display selection will never return this error.
