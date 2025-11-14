@@ -8,7 +8,7 @@ err: u8,
 
 /// Get the next pending event for all passed windows,
 /// or `null` if there are no more pending events.
-pub fn poll(client: Client, windows: []const *Window) ?Event {
+pub fn poll(client: Client, windows: []const *Window) ?struct { ?*Window, Event } {
     // TODO invert this loop structure to the user
     // so we don't call XPending many times in a poll loop
 
@@ -16,14 +16,17 @@ pub fn poll(client: Client, windows: []const *Window) ?Event {
     debug.assert(pending >= 0); // TODO confirm never negative
 
     while (pending > 0) : (pending -= 1) {
-        const event: h.XEvent = get: {
+        const x_event: h.XEvent = get: {
             // TODO needs to be zeroed or can be undefined?
             var e = mem.zeroes(h.XEvent);
             // TODO check this isn't returning something important
             _ = x11.XNextEvent(client.display, &e);
             break :get e;
         };
-        if (client.processXEvent(event, windows)) |e| return e;
+
+        const window: ?*Window = windowFromEvent(x_event, windows);
+        if (client.processEvent(x_event, window)) |event|
+            return .{ window, event };
     }
 
     return null;
@@ -31,123 +34,100 @@ pub fn poll(client: Client, windows: []const *Window) ?Event {
 
 /// Get the next pending event for all passed windows,
 /// and block if there are not yet pending events.
-pub fn wait(client: Client, windows: []const *Window) Event {
+pub fn wait(client: Client, windows: []const *Window) ?struct { ?*Window, Event } {
     while (true) {
-        const event: h.XEvent = get: {
+        const x_event: h.XEvent = get: {
             // TODO needs to be zeroed or can be undefined?
             var e = mem.zeroes(h.XEvent);
             // TODO check this isn't returning something important
             _ = x11.XNextEvent(client.display, &e);
             break :get e;
         };
-        if (client.processXEvent(event, windows)) |e| return e;
+
+        const window: ?*Window = windowFromEvent(x_event, windows);
+        if (client.processEvent(x_event, window)) |event|
+            return .{ window, event };
     }
 }
 
-pub const Event = union(common.Event) {
-    pub const Type = common.Event;
+pub const Event = common.Event;
+pub const Message = common.Message;
 
-    pub const Close = struct {
-        window: *Window,
-    };
-
-    pub const Redraw = struct {
-        window: *Window,
-        x: ScreenCoordinates,
-        y: ScreenCoordinates,
-        width: ScreenPoints,
-        height: ScreenPoints,
-    };
-
-    pub const Resize = struct {
-        window: *Window,
-        x: ScreenCoordinates,
-        y: ScreenCoordinates,
-        width: ScreenPoints,
-        height: ScreenPoints,
-    };
-
-    pub const Reposition = struct {
-        window: *Window,
-        x: ScreenCoordinates,
-        y: ScreenCoordinates,
-    };
-
-    close: Close,
-    redraw: Redraw,
-    resize: Resize,
-    reposition: Reposition,
-};
-
-fn processXEvent(client: Client, e: h.XEvent, windows: []const *Window) ?Event {
-    // Linear search through possible windows may be inefficient
-    // but probably doesn't matter because there is rarely even more than one.
-    // needs profiling TODO
-
-    return switch (e.@"type") {
+fn windowFromEvent(e: h.XEvent, windows: []const *Window) ?*Window {
+    const handle = switch (e.@"type") {
+        h.Expose => e.xexpose.window,
+        h.ConfigureNotify => e.xconfigure.window,
+        h.ClientMessage => e.xclient.window,
         else => null,
+    };
 
-        h.Expose => .{ .redraw = .{
-            .window = for (windows) |w| {
-                if (w.handle == e.xexpose.window) break w;
-            } else return null,
+    return for (windows) |w| {
+        if (w.handle == handle) break w;
+    } else null;
+}
+
+fn processEvent(client: Client, e: h.XEvent, window: ?*Window) ?Event {
+    switch (e.@"type") {
+        else => return null,
+
+        h.Expose => return .{ .redraw = .{
             .x = @intCast(e.xexpose.x),
             .y = @intCast(e.xexpose.y),
             .width = @intCast(e.xexpose.width),
             .height = @intCast(e.xexpose.height),
         }},
 
-        h.ConfigureNotify => conf_notif: {
-            const window = for (windows) |w| {
-                if (w.handle == e.xconfigure.window) break w;
-            } else return null;
-
-            const old_width = @atomicLoad(ScreenPoints, &window.width, .acquire);
-            const old_height = @atomicLoad(ScreenPoints, &window.height, .acquire);
-            const old_x = @atomicLoad(ScreenCoordinates, &window.x, .acquire);
-            const old_y = @atomicLoad(ScreenCoordinates, &window.y, .acquire);
-
+        h.ConfigureNotify => {
             const new_width: ScreenPoints = @intCast(e.xconfigure.width);
             const new_height: ScreenPoints = @intCast(e.xconfigure.height);
             const new_x: ScreenCoordinates = @intCast(e.xconfigure.x);
             const new_y: ScreenCoordinates = @intCast(e.xconfigure.y);
 
-            @atomicStore(ScreenPoints, &window.width, new_width, .release);
-            @atomicStore(ScreenPoints, &window.height, new_height, .release);
-            @atomicStore(ScreenCoordinates, &window.x, new_x, .release);
-            @atomicStore(ScreenCoordinates, &window.y, new_y, .release);
+            if (window) |w| {
+                const old_width = @atomicLoad(ScreenPoints, &w.width, .acquire);
+                const old_height = @atomicLoad(ScreenPoints, &w.height, .acquire);
+                const old_x = @atomicLoad(ScreenCoordinates, &w.x, .acquire);
+                const old_y = @atomicLoad(ScreenCoordinates, &w.y, .acquire);
 
-            if (new_width != old_width or new_height != old_height) {
-                break :conf_notif Event{ .resize = .{
-                    .window = window,
+                @atomicStore(ScreenPoints, &w.width, new_width, .release);
+                @atomicStore(ScreenPoints, &w.height, new_height, .release);
+                @atomicStore(ScreenCoordinates, &w.x, new_x, .release);
+                @atomicStore(ScreenCoordinates, &w.y, new_y, .release);
+
+                if (new_width != old_width or new_height != old_height) {
+                    return .{ .resize = .{
+                        .width = new_width,
+                        .height = new_height,
+                        .x = new_x,
+                        .y = new_y,
+                    }};
+                } else if (new_x != old_x or new_y != old_y) {
+                    return .{ .reposition = .{
+                        .x = new_x,
+                        .y = new_y,
+                    }};
+                } else {
+                    return null;
+                }
+            } else {
+                // TODO note in docs that if a ConfigureNotify cannot be matched to a window
+                // then the window will not have its size/position updated
+                // and it will always return a resize
+                return .{ .resize = .{
+                    .x = new_x,
+                    .y = new_y,
                     .width = new_width,
                     .height = new_height,
-                    .x = new_x,
-                    .y = new_y,
                 }};
-            } else if (new_x != old_x or new_y != old_y) {
-                break :conf_notif Event{ .reposition = .{
-                    .window = window,
-                    .x = new_x,
-                    .y = new_y,
-                }};
-            } else {
-                return null;
             }
         },
 
-        h.ClientMessage => msg: {
-            const window = for (windows) |w| {
-                if (w.handle == e.xclient.window) break w;
-            } else return null;
-
+        h.ClientMessage => {
             switch (e.xclient.format) {
                 8, 16 => return null,
                 32 => {
                     if (e.xclient.data.l[0] == client.delete_window_atom) {
-                        break :msg Event{ .close = .{
-                            .window = window,
-                        }};
+                        return .{ .close = {} };
                     } else {
                         return null;
                     }
@@ -161,13 +141,17 @@ fn processXEvent(client: Client, e: h.XEvent, windows: []const *Window) ?Event {
         },
 
         // TODO input
-    };
+    }
 }
 
 pub const ConnectionError = common.ConnectionError;
 
+pub const ConnectOptions = struct {
+};
+
 /// Initialize a connection to the display server.
-pub fn connect(client: *Client) ConnectionError!void {
+pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
+    _ = options;
     client.display = x11.XOpenDisplay(null) orelse return no_display: {
         // TODO I don't think this is a rigorous check
         // of all of the ways this could have failed
@@ -707,7 +691,7 @@ pub const Window = struct {
 test "open and close window" {
     if (build_options.x11_linked) {
         var client: Client = undefined;
-        client.connect() catch return error.SkipZigTest;
+        client.connect(.{}) catch return error.SkipZigTest;
         defer client.disconnect();
 
         var window = try client.openWindow(.{
