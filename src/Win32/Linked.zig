@@ -217,7 +217,7 @@ pub const Window = struct {
 
         window.handle = win32.CreateWindowExW(
             0, // TODO extended window style
-            MAKEINTATOM(client.direct_window_class),
+            .fromAtom(client.direct_window_class),
             window_name,
             h.WS_OVERLAPPEDWINDOW,
             options.origin_x orelse h.CW_USEDEFAULT,
@@ -307,7 +307,7 @@ const win32 = if (build_options.win32_linked) struct {
 
     pub extern fn CreateWindowExW(
         dwExStyle: h.DWORD,
-        lpClassName: ?[*:0]const align(1) u16, // LPCWSTR or (LPCWSTR)ATOM
+        lpClassName: LpClassNameOrAtom,
         lpWindowName: h.LPCWSTR,
         dwStyle: h.DWORD,
         X: c_int,
@@ -381,6 +381,28 @@ const Client = @This();
 const ScreenPoints = common.ScreenPoints;
 const ScreenCoordinates = common.ScreenCoordinates;
 
+const LpClassNameOrAtom = packed union {
+    lpcwstr: h.LPCWSTR,
+    atom: packed struct {
+        atom: u16,
+        _high: @Type(.{ .int = .{
+            .signedness = .unsigned,
+            .bits = @bitSizeOf(h.LPCWSTR) - @bitSizeOf(u16),
+        }}) = 0,
+    },
+
+    pub fn fromAtom(atom: h.ATOM) LpClassNameOrAtom {
+        return .{ .atom = .{ .atom = @intCast(atom) }};
+    }
+};
+comptime { debug.assert(@bitSizeOf(LpClassNameOrAtom) == @bitSizeOf(h.LPCWSTR)); }
+test LpClassNameOrAtom {
+    const atom: h.ATOM = 0x0063;
+    const as_macro: usize = @intFromPtr(MAKEINTATOM(atom));
+    const as_union: usize = @bitCast(LpClassNameOrAtom.fromAtom(atom));
+    try testing.expectEqual(as_macro, as_union);
+}
+
 // translate-c (as of 0.15.2) has trouble with `winbase.h`
 inline fn MAKEINTATOM(atom: h.ATOM) ?[*:0]const align(1) u16 {
     return @ptrFromInt(@as(u16, @intCast(atom)));
@@ -398,6 +420,7 @@ const kernel32 = std.os.windows.kernel32;
 
 const mem = std.mem;
 const debug = std.debug;
+const testing = std.testing;
 
 const common = @import("common");
 const build_options = @import("build_options");
