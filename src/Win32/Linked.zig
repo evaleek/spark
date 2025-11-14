@@ -307,7 +307,7 @@ const win32 = if (build_options.win32_linked) struct {
 
     pub extern fn CreateWindowExW(
         dwExStyle: h.DWORD,
-        lpClassName: LpClassNameOrAtom,
+        lpClassName: StringOrAtom,
         lpWindowName: h.LPCWSTR,
         dwStyle: h.DWORD,
         X: c_int,
@@ -381,25 +381,27 @@ const Client = @This();
 const ScreenPoints = common.ScreenPoints;
 const ScreenCoordinates = common.ScreenCoordinates;
 
-const LpClassNameOrAtom = packed union {
-    lpcwstr: h.LPCWSTR,
+const StringOrAtom = packed union {
+    string: h.LPCWSTR,
     atom: packed struct {
-        atom: u16,
+        word: h.WORD,
         _high: @Type(.{ .int = .{
             .signedness = .unsigned,
-            .bits = @bitSizeOf(h.LPCWSTR) - @bitSizeOf(u16),
+            .bits = @bitSizeOf(h.LPCWSTR) - @bitSizeOf(h.WORD),
         }}) = 0,
     },
 
-    pub fn fromAtom(atom: h.ATOM) LpClassNameOrAtom {
-        return .{ .atom = .{ .atom = @intCast(atom) }};
+    pub inline fn fromAtom(atom: h.ATOM) StringOrAtom {
+        return .{ .atom = .{ .word = atom }};
     }
 };
-comptime { debug.assert(@bitSizeOf(LpClassNameOrAtom) == @bitSizeOf(h.LPCWSTR)); }
-test LpClassNameOrAtom {
-    const atom: h.ATOM = 0x0063;
+comptime { debug.assert(h.ATOM == h.WORD); }
+comptime { debug.assert(@bitSizeOf(h.WORD) == 16); }
+comptime { debug.assert(@bitSizeOf(StringOrAtom) == @bitSizeOf(h.LPCWSTR)); }
+test StringOrAtom {
+    const atom: h.ATOM = 0x63;
     const as_macro: usize = @intFromPtr(MAKEINTATOM(atom));
-    const as_union: usize = @bitCast(LpClassNameOrAtom.fromAtom(atom));
+    const as_union: usize = @bitCast(StringOrAtom.fromAtom(atom));
     try testing.expectEqual(as_macro, as_union);
 }
 
