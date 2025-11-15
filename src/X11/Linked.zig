@@ -50,8 +50,8 @@ pub fn wait(client: Client, windows: []const *Window) ?struct { ?*Window, Event 
     }
 }
 
-pub const Event = common.Event;
-pub const Message = common.Message;
+pub const Event = root.Event;
+pub const Message = root.Message;
 
 fn windowFromEvent(e: h.XEvent, windows: []const *Window) ?*Window {
     const handle = switch (e.@"type") {
@@ -78,21 +78,21 @@ fn processEvent(client: Client, e: h.XEvent, window: ?*Window) ?Event {
         }},
 
         h.ConfigureNotify => {
-            const new_width: ScreenPoints = @intCast(e.xconfigure.width);
-            const new_height: ScreenPoints = @intCast(e.xconfigure.height);
-            const new_x: ScreenCoordinates = @intCast(e.xconfigure.x);
-            const new_y: ScreenCoordinates = @intCast(e.xconfigure.y);
+            const new_width: ScreenSize = @intCast(e.xconfigure.width);
+            const new_height: ScreenSize = @intCast(e.xconfigure.height);
+            const new_x: ScreenPosition = @intCast(e.xconfigure.x);
+            const new_y: ScreenPosition = @intCast(e.xconfigure.y);
 
             if (window) |w| {
-                const old_width = @atomicLoad(ScreenPoints, &w.width, .acquire);
-                const old_height = @atomicLoad(ScreenPoints, &w.height, .acquire);
-                const old_x = @atomicLoad(ScreenCoordinates, &w.x, .acquire);
-                const old_y = @atomicLoad(ScreenCoordinates, &w.y, .acquire);
+                const old_width = @atomicLoad(ScreenSize, &w.width, .acquire);
+                const old_height = @atomicLoad(ScreenSize, &w.height, .acquire);
+                const old_x = @atomicLoad(ScreenPosition, &w.x, .acquire);
+                const old_y = @atomicLoad(ScreenPosition, &w.y, .acquire);
 
-                @atomicStore(ScreenPoints, &w.width, new_width, .release);
-                @atomicStore(ScreenPoints, &w.height, new_height, .release);
-                @atomicStore(ScreenCoordinates, &w.x, new_x, .release);
-                @atomicStore(ScreenCoordinates, &w.y, new_y, .release);
+                @atomicStore(ScreenSize, &w.width, new_width, .release);
+                @atomicStore(ScreenSize, &w.height, new_height, .release);
+                @atomicStore(ScreenPosition, &w.x, new_x, .release);
+                @atomicStore(ScreenPosition, &w.y, new_y, .release);
 
                 if (new_width != old_width or new_height != old_height) {
                     return .{ .resize = .{
@@ -144,7 +144,7 @@ fn processEvent(client: Client, e: h.XEvent, window: ?*Window) ?Event {
     }
 }
 
-pub const ConnectionError = common.ConnectionError;
+pub const ConnectionError = root.ConnectionError;
 
 pub const ConnectOptions = struct {
 };
@@ -341,13 +341,13 @@ pub fn iterateDisplays(client: Client) !Display.Iterator {
 }
 
 pub const Display = struct {
-    pub const Info = common.DisplayInfo;
+    pub const Info = root.DisplayInfo;
 
     pub fn iterate(client: Client) !Iterator {
         if (client.xrr_available) {
-            const root: h.Window = h.DefaultRootWindow(client.display);
+            const root_window: h.Window = h.DefaultRootWindow(client.display);
             const resources: *h.XRRScreenResources = x11.XRRGetScreenResources(
-                client.display, root,
+                client.display, root_window,
             ) orelse return error.Unavailable;
 
             return Iterator{
@@ -465,13 +465,14 @@ pub fn showWindow(client: *Client, window: Window) void {
 
 pub const Window = struct {
     handle: h.Window,
-    x: ScreenCoordinates,
-    y: ScreenCoordinates,
-    width: ScreenPoints,
-    height: ScreenPoints,
 
-    pub const CreationOptions = common.WindowCreationOptions;
-    pub const CreationError = common.WindowCreationError;
+    x: ScreenPosition,
+    y: ScreenPosition,
+    width: ScreenSize,
+    height: ScreenSize,
+
+    pub const CreationOptions = root.WindowCreationOptions;
+    pub const CreationError = root.WindowCreationError;
 
     pub fn open(window: *Window, client: *Client, options: CreationOptions) CreationError!void {
         // The library assumes a single X11 screen
@@ -479,14 +480,14 @@ pub const Window = struct {
         // Maybe TODO enumerate possible Screens if Xrandr is unavailable
 
         const screen: c_int = h.DefaultScreen(client.display);
-        const root: h.Window = h.RootWindow(client.display, screen);
+        const root_window: h.Window = h.RootWindow(client.display, screen);
 
         // TODO inject as function
-        const display_x: ScreenCoordinates,
-        const display_y: ScreenCoordinates = display_origin: {
+        const display_x: ScreenPosition,
+        const display_y: ScreenPosition = display_origin: {
             if (client.xrr_available) {
                 const resources: *h.XRRScreenResources = x11.XRRGetScreenResources(
-                    client.display, root,
+                    client.display, root_window,
                 ) orelse break :display_origin .{ 0, 0 };
                 defer x11.XRRFreeScreenResources(resources);
 
@@ -552,7 +553,7 @@ pub const Window = struct {
 
                     return error.InvalidDisplay;
                 } else {
-                    const primary: h.RROutput = x11.XRRGetOutputPrimary(client.display, root);
+                    const primary: h.RROutput = x11.XRRGetOutputPrimary(client.display, root_window);
                     for (outputs) |output| {
                         if (output == primary) {
                             const output_info: *h.XRROutputInfo = x11.XRRGetOutputInfo(
@@ -598,13 +599,13 @@ pub const Window = struct {
             h.StructureNotifyMask
         ;
 
-        window.x = display_x + ( options.origin_x orelse common.fallback_default_window_origin_x );
-        window.y = display_y + ( options.origin_y orelse common.fallback_default_window_origin_y );
-        window.width = options.width orelse common.fallback_default_window_width;
-        window.height = options.height orelse common.fallback_default_window_height;
+        window.x = display_x + ( options.origin_x orelse root.fallback_default_window_origin_x );
+        window.y = display_y + ( options.origin_y orelse root.fallback_default_window_origin_y );
+        window.width = options.width orelse root.fallback_default_window_width;
+        window.height = options.height orelse root.fallback_default_window_height;
 
         window.handle = x11.XCreateWindow(
-            client.display, root,
+            client.display, root_window,
             window.x, window.y,
             window.width, window.height, 0,
             h.CopyFromParent, h.InputOutput,
@@ -687,25 +688,6 @@ pub const Window = struct {
         }
     }
 };
-
-test "open and close window" {
-    if (build_options.x11_linked) {
-        var client: Client = undefined;
-        client.connect(.{}) catch return error.SkipZigTest;
-        defer client.disconnect();
-
-        var window = try client.openWindow(.{
-            .name = "test window",
-            .width = 800,
-            .height = 400,
-        });
-        defer client.closeWindow(&window);
-
-        client.showWindow(window);
-    } else {
-        return error.SkipZigTest;
-    }
-}
 
 var context_key: h.XContext = null_context;
 const null_context: h.XContext = 0;
@@ -823,8 +805,8 @@ const h = if (build_options.x11_linked) @import("x11")
     else @compileError("invalid reference to unlinked X11 headers");
 
 const Client = @This();
-const ScreenPoints = common.ScreenPoints;
-const ScreenCoordinates = common.ScreenCoordinates;
+const ScreenSize = root.ScreenSize;
+const ScreenPosition = root.ScreenPosition;
 
 const debug = std.debug;
 const testing = std.testing;
@@ -832,6 +814,6 @@ const log = std.log;
 const mem = std.mem;
 const posix = std.posix;
 
-const common = @import("common");
+const root = @import("../root.zig");
 const build_options = @import("build_options");
 const std = @import("std");

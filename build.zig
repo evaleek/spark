@@ -57,9 +57,6 @@ pub fn build(b: *std.Build) !void {
     });
 
     mod.addOptions("build_options", options);
-    mod.addAnonymousImport("common", .{
-        .root_source_file = b.path("src/common.zig"),
-    });
 
     if (link_x11) {
         mod.linkSystemLibrary("X11", .{

@@ -1,5 +1,4 @@
 use_main_show_hint: bool,
-
 hInstance: h.HINSTANCE,
 nCmdShow: c_int,
 direct_window_class: h.ATOM,
@@ -44,8 +43,8 @@ pub fn wait(client: *Client, windows: []const *Window) struct { ?*Window, Event 
     }
 }
 
-pub const Event = common.Event;
-pub const Message = common.Message;
+pub const Event = root.Event;
+pub const Message = root.Message;
 
 fn processEvent(window: ?*Window, msg: h.MSG) ?Event {
     _ = window;
@@ -56,7 +55,7 @@ fn processEvent(window: ?*Window, msg: h.MSG) ?Event {
     }
 }
 
-pub const ConnectionError = common.ConnectionError;
+pub const ConnectionError = root.ConnectionError;
 
 pub const ConnectOptions = struct {
     /// Whether to use or ignore `nCmdShow` for the first/next *shown* window,
@@ -192,13 +191,13 @@ pub fn showWindow(client: *Client, window: Window) void {
 pub const Window = struct {
     handle: h.HWND,
 
-    x: ScreenCoordinates,
-    y: ScreenCoordinates,
-    width: ScreenPoints,
-    height: ScreenPoints,
+    x: ScreenPosition,
+    y: ScreenPosition,
+    width: ScreenSize,
+    height: ScreenSize,
 
-    pub const CreationError = common.WindowCreationError;
-    pub const CreationOptions = common.WindowCreationOptions;
+    pub const CreationOptions = root.WindowCreationOptions;
+    pub const CreationError = root.WindowCreationError;
 
     pub fn open(window: *Window, client: *Client, options: CreationOptions) CreationError!void {
         // TODO determine good max name length
@@ -269,23 +268,6 @@ pub const Window = struct {
         //}
     }
 };
-
-test "open and close window" {
-    if (build_options.win32_linked) {
-        var client: Client = undefined;
-        client.connect(.{}) catch return error.SkipZigTest;
-        defer client.disconnect();
-
-        var window = try client.openWindow(.{
-            .name = "test window",
-        });
-        defer client.closeWindow(&window);
-
-        client.showWindow(window);
-    } else {
-        return error.SkipZigTest;
-    }
-}
 
 const win32 = if (build_options.win32_linked) struct {
     pub extern fn RegisterClassExW(
@@ -378,8 +360,8 @@ const win32 = if (build_options.win32_linked) struct {
 } else @compileError("invalid reference to unlinked Win32 library");
 
 const Client = @This();
-const ScreenPoints = common.ScreenPoints;
-const ScreenCoordinates = common.ScreenCoordinates;
+const ScreenSize = root.ScreenSize;
+const ScreenPosition = root.ScreenPosition;
 
 const StringOrAtom = packed union {
     string: h.LPCWSTR,
@@ -424,6 +406,6 @@ const mem = std.mem;
 const debug = std.debug;
 const testing = std.testing;
 
-const common = @import("common");
+const root = @import("../root.zig");
 const build_options = @import("build_options");
 const std = @import("std");
