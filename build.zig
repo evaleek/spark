@@ -20,28 +20,28 @@ pub fn build(b: *std.Build) !void {
         "Disallow X11 unit test skips when system is missing X (default: false)",
     ) orelse false;
 
-    const link_x11 = !no_link and b.option(
+    const link_x11 = ( b.option(
         bool,
         "x11",
         "Link the X11 system libraries (default for Linux/BSD targets)",
     ) orelse switch (target.result.os.tag) {
         .linux, .freebsd, .netbsd, .openbsd, .illumos => true,
         else => false,
-    };
+    }) and !no_link;
     const link_x11_mode = b.option(
         LinkMode,
         "x11-link-mode",
         "Override default link mode for X11",
     ) orelse default_link_mode;
 
-    const link_win32 = !no_link and b.option(
+    const link_win32 = ( b.option(
         bool,
         "win32",
         "Link the Win32 system libraries (default for Windows targets)",
     ) orelse switch (target.result.os.tag) {
         .windows => true,
         else => false,
-    };
+    }) and !no_link;
     const link_win32_mode = b.option(
         LinkMode,
         "win32-link-mode",
