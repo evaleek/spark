@@ -41,7 +41,7 @@ pub const WindowCreationError = error{
     /// The display selection was invalid,
     /// or may have been invalidated since display enumeration.
     /// Retrying with a `null` display selection will never return this error.
-    InvalidDisplay,
+    InvalidDisplaySelection,
 };
 
 pub const DisplayInfo = struct {
