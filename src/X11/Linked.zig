@@ -236,7 +236,9 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
 
 test "no context before set" {
     if (build_options.x11_linked) {
-        const display = x11.XOpenDisplay(null) orelse return error.SkipZigTest;
+        const display = x11.XOpenDisplay(null) orelse return
+            if (build_options.x11_force_test_host) error.X11ConnectionFailure
+            else error.SkipZigTest;
         defer _ = x11.XCloseDisplay(display);
         const context = h.XUniqueContext();
 
@@ -342,6 +344,8 @@ pub fn iterateDisplays(client: Client) !Display.Iterator {
 
 pub const Display = struct {
     pub const Info = root.DisplayInfo;
+    pub const Size = root.DisplaySize;
+    pub const Selection = root.DisplaySelection;
 
     pub fn iterate(client: Client) !Iterator {
         if (client.xrr_available) {

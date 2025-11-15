@@ -10,7 +10,14 @@ pub fn build(b: *std.Build) !void {
     const no_link = b.option(
         bool,
         "no-link",
-        "Disallow linking any system libraries",
+        "Disallow linking any system libraries (default: false)",
+    ) orelse false;
+    // All buildable backends will by default skip unit tests
+    // when the host daemon or system libraries are missing.
+    const x11_force_test_host = b.option(
+        bool,
+        "x11-test-host",
+        "Disallow X11 unit test skips when system is missing X (default: false)",
     ) orelse false;
 
     const link_x11 = !no_link and b.option(
@@ -40,6 +47,13 @@ pub fn build(b: *std.Build) !void {
         "win32-link-mode",
         "Override default link mode for Win32",
     ) orelse default_link_mode;
+    // All buildable backends will by default skip unit tests
+    // when the host daemon or system libraries are missing.
+    const win32_force_test_host = b.option(
+        bool,
+        "win32-test-host",
+        "Disallow Win32 unit test skips when system is missing win32 (default: false)",
+    ) orelse false;
 
     const zon = @import("build.zig.zon");
     const zon_version: SemVer = try SemVer.parse(zon.version);
@@ -49,7 +63,9 @@ pub fn build(b: *std.Build) !void {
     options.addOption([:0]const u8, "name", zon_name);
     options.addOption(SemVer, "version", zon_version);
     options.addOption(bool, "x11_linked", link_x11);
+    options.addOption(bool, "x11_force_test_host", x11_force_test_host);
     options.addOption(bool, "win32_linked", link_win32);
+    options.addOption(bool, "win32_force_test_host", win32_force_test_host);
 
     const mod = b.addModule(zon_name, .{
         .root_source_file = b.path("src/root.zig"),
