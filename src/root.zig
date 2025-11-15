@@ -4,37 +4,10 @@ pub const X11 = struct {
     pub const Linked = @import("X11/Linked.zig");
 };
 
+
 pub const Win32 = struct {
     pub const Linked = @import("Win32/Linked.zig");
 };
-
-test "open and close window" {
-    inline for ([_][:0]const u8{
-        "X11",
-        "Win32"
-    }) |name| {
-        const lowercase: [name.len :0]u8 = comptime to_lower: {
-            var buffer: [name.len :0]u8 = undefined;
-            for (&buffer, name) |*b, n| b.* = ascii.toLower(n);
-            break :to_lower buffer;
-        };
-        if (comptime @field(build_options, lowercase ++ "_linked")) {
-            const Client = @field(@This(), name).Linked;
-
-            var client: Client = undefined;
-            client.connect(.{}) catch |err| switch (err) {
-                error.HostDown => return error.SkipZigTest,
-                else => return err,
-            };
-            defer client.disconnect();
-
-            var window = try client.openWindow(.{ .name = "Spark test window" });
-            defer client.closeWindow(&window);
-
-            client.showWindow(window);
-        }
-    }
-}
 
 /// Length in screen coordinates
 pub const ScreenSize = u32;
@@ -159,6 +132,83 @@ pub const fallback_default_window_origin_y = 0;
 pub const fallback_default_window_width = 800;
 pub const fallback_default_window_height = 600;
 
+test "reference all backends" {
+    inline for ([_][:0]const u8{
+        "X11",
+        "Win32",
+    }) |backend_name| {
+        const lowercase_name = comptime toLowercaseComptime(backend_name);
+        const Backend = @field(@This(), backend_name);
+        if (@hasDecl(Backend, "Linked") and
+            @field(build_options, lowercase_name ++ "_linked")) _ = Backend.Linked;
+        if (@hasDecl(Backend, "Loaded")) _ = Backend.Loaded;
+        if (@hasDecl(Backend, "Standalone")) _ = Backend.Standalone;
+    }
+}
+
+test "x11-linked window creation" {
+    if (build_options.x11_linked and passesUnitTests(&.{ "X11", "Linked" })) {
+        try openCloseWindow(X11.Linked);
+    } else {
+        return error.SkipZigTest;
+    }
+}
+
+test "win32-linked window creation" {
+    if (build_options.win32_linked and passesUnitTests(&.{ "Win32", "Linked" })) {
+        try openCloseWindow(Win32.Linked);
+    } else {
+        return error.SkipZigTest;
+    }
+}
+
+fn openCloseWindow(comptime Client: type) !void {
+    if (!@import("builtin").is_test)
+        @compileError("openCloseWindow() is a test helper function");
+
+    var client: Client = undefined;
+    client.connect(.{}) catch |err| switch (err) {
+        error.HostDown => return error.SkipZigTest,
+        else => return err,
+    };
+    defer client.disconnect();
+
+    var window = try client.openWindow(.{ .name = "Spark test window" });
+    defer client.closeWindow(&window);
+
+    client.showWindow(window);
+}
+
+fn passesUnitTests(qualifiers: []const []const u8) bool {
+    return for (@import("builtin").test_functions) |test_fn| {
+        if (isNamespace(test_fn.name, qualifiers))
+            test_fn.func() catch break false;
+    } else true;
+}
+
+fn toLowercaseComptime(comptime string: []const u8) [string.len :0]u8 {
+    var buffer: [string.len :0]u8 = undefined;
+    for (&buffer, string) |*b, s| b.* = ascii.toLower(s);
+    return buffer;
+}
+
+fn isNamespace(name: []const u8, qualifiers: []const []const u8) bool {
+    const Iterator = mem.TokenIterator(u8, .scalar);
+    var iter = Iterator{
+        .buffer = name,
+        .delimiter = '.',
+        .index = 0,
+    };
+
+    return for (qualifiers) |qualifier| {
+        if (
+            if (iter.next()) |token| !mem.eql(u8, qualifier, token)
+            else break false
+        ) break false;
+    } else true;
+}
+
+const mem = std.mem;
 const testing = std.testing;
 const ascii = std.ascii;
 
