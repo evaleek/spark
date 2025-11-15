@@ -12,13 +12,6 @@ pub fn build(b: *std.Build) !void {
         "no-link",
         "Disallow linking any system libraries (default: false)",
     ) orelse false;
-    // All buildable backends will by default skip unit tests
-    // when the host daemon or system libraries are missing.
-    const x11_force_test_host = b.option(
-        bool,
-        "x11-test-host",
-        "Disallow X11 unit test skips when system is missing X (default: false)",
-    ) orelse false;
 
     const link_x11 = ( b.option(
         bool,
@@ -33,6 +26,13 @@ pub fn build(b: *std.Build) !void {
         "x11-link-mode",
         "Override default link mode for X11",
     ) orelse default_link_mode;
+    // All buildable backends will by default skip unit tests
+    // when the host daemon or system libraries are missing.
+    const x11_force_test_host = b.option(
+        bool,
+        "x11-test-host",
+        "Disallow X11 unit test skips when system is missing X (default: false)",
+    ) orelse false;
 
     const link_win32 = ( b.option(
         bool,

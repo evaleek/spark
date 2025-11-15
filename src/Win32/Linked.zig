@@ -1,12 +1,12 @@
 use_main_show_hint: bool,
-hInstance: h.HINSTANCE,
+hInstance: HINSTANCE,
 nCmdShow: c_int,
-direct_window_class: h.ATOM,
+direct_window_class: ATOM,
 
 pub fn poll(client: *Client, windows: []const *Window) ?struct { ?*Window, Event } {
     _ = client;
-    var msg: h.MSG = undefined;
-    if ( win32.PeekMessageW(&msg, 0, 0, 0, h.PM_REMOVE) != 0 ) {
+    var msg: MSG = undefined;
+    if ( win32.PeekMessageW(&msg, 0, 0, 0, PM_REMOVE) != 0 ) {
         // TODO look into how necessary DispatchMessage is
         defer _ = win32.DispatchMessageW(&msg);
 
@@ -25,7 +25,7 @@ pub fn poll(client: *Client, windows: []const *Window) ?struct { ?*Window, Event
 pub fn wait(client: *Client, windows: []const *Window) struct { ?*Window, Event } {
     _ = client;
     while (true) {
-        var msg: h.MSG = undefined;
+        var msg: MSG = undefined;
         const got = win32.GetMessageW(&msg, 0, 0, 0);
         // In direct polling there should be no WM_QUIT.
         // If we want to allow it it has to be handled here
@@ -46,12 +46,12 @@ pub fn wait(client: *Client, windows: []const *Window) struct { ?*Window, Event 
 pub const Event = root.Event;
 pub const Message = root.Message;
 
-fn processEvent(window: ?*Window, msg: h.MSG) ?Event {
+fn processEvent(window: ?*Window, msg: MSG) ?Event {
     _ = window;
     switch (msg.message) {
         else => return null,
 
-        h.WM_CLOSE => return .{ .close = {} },
+        WM_CLOSE => return .{ .close = {} },
     }
 }
 
@@ -71,7 +71,7 @@ pub const ConnectOptions = struct {
     use_main_show_hint: bool = true,
     /// Provide an `hInstance` to use for window creation. If `null`,
     /// `connect` will retrieve the executable's `hInstance` from `GetModuleHandle(null)`.
-    hInstance: ?h.HINSTANCE = null,
+    hInstance: ?HINSTANCE = null,
     /// Provide an `nCmdShow` to use for main window creation. If `null`,
     /// `connect` will retrieve the executable's `nCmdShow` from `GetStartupInfo()`
     nCmdShow: ?c_int = null,
@@ -82,25 +82,25 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
 
     // TODO does GetModuleHandle always return the correct HINSTANCE
     // and can it return null in this case
-    client.hInstance = options.hInstance orelse @as(h.HINSTANCE,
+    client.hInstance = options.hInstance orelse @as(HINSTANCE,
         @alignCast(@ptrCast( kernel32.GetModuleHandleW(null).? )));
 
     client.nCmdShow = options.nCmdShow orelse get_cmd_show: {
-        var si = mem.zeroes(h.STARTUPINFOW);
+        var si = mem.zeroes(STARTUPINFOW);
         win32.GetStartupInfoW(&si);
         break :get_cmd_show
             if (si.dwFlags & STARTF_USESHOWWINDOW != 0) si.wShowWindow
-            else h.SW_SHOWDEFAULT;
+            else SW_SHOWDEFAULT;
     };
 
     client.direct_window_class = win32.RegisterClassExW(&.{
-        .cbSize = @sizeOf(h.WNDCLASSEXW),
+        .cbSize = @sizeOf(WNDCLASSEXW),
         .lpfnWndProc = &WndProcDefault,
         .hInstance = client.hInstance,
         .lpszClassName = strL(direct_window_class_name),
         .style = 0, // TODO
         .hIcon = 0, // TODO
-        .hCursor = win32.LoadCursorW(0, h.IDC_ARROW),
+        .hCursor = win32.LoadCursorW(0, IDC_ARROW),
 
         .cbClsExtra = 0,
         .cbWndExtra = 0,
@@ -143,18 +143,18 @@ pub const direct_window_class_name = "SparkDirect";
 
 // TODO is callconv(.winapi) equivalent to __stdcall?
 fn WndProcDefault(
-    hWnd: h.HWND,
-    uMsg: h.UINT,
-    wParam: h.WPARAM,
-    lParam: h.LPARAM,
-) callconv(.winapi) h.LRESULT {
+    hWnd: HWND,
+    uMsg: UINT,
+    wParam: WPARAM,
+    lParam: LPARAM,
+) callconv(.winapi) LRESULT {
     switch (uMsg) {
         else => return win32.DefWindowProcW(hWnd, uMsg, wParam, lParam),
 
-        h.WM_PAINT => {
-            var ps = mem.zeroes(h.PAINTSTRUCT);
+        WM_PAINT => {
+            var ps = mem.zeroes(PAINTSTRUCT);
 
-            const hdc: h.HDC = win32.BeginPaint(hWnd, &ps);
+            const hdc: HDC = win32.BeginPaint(hWnd, &ps);
             // We don't need the display device context here,
             // because we are just calling this to acknowledge the PAINT event
             // and be a well-behaved Windows window
@@ -170,7 +170,7 @@ fn WndProcDefault(
             return 0;
         },
 
-        h.WM_ERASEBKGND => return 1,
+        WM_ERASEBKGND => return 1,
     }
 }
 
@@ -189,7 +189,7 @@ pub fn showWindow(client: *Client, window: Window) void {
 }
 
 pub const Window = struct {
-    handle: h.HWND,
+    handle: HWND,
 
     x: ScreenPosition,
     y: ScreenPosition,
@@ -218,11 +218,11 @@ pub const Window = struct {
             0, // TODO extended window style
             .fromAtom(client.direct_window_class),
             window_name,
-            h.WS_OVERLAPPEDWINDOW,
-            options.origin_x orelse h.CW_USEDEFAULT,
-            options.origin_y orelse h.CW_USEDEFAULT,
-            if (options.width) |width| @intCast(width) else h.CW_USEDEFAULT,
-            if (options.height) |height| @intCast(height) else h.CW_USEDEFAULT,
+            WS_OVERLAPPEDWINDOW,
+            options.origin_x orelse CW_USEDEFAULT,
+            options.origin_y orelse CW_USEDEFAULT,
+            if (options.width) |width| @intCast(width) else CW_USEDEFAULT,
+            if (options.height) |height| @intCast(height) else CW_USEDEFAULT,
             0, 0,
             client.hInstance,
             null,
@@ -254,7 +254,7 @@ pub const Window = struct {
                 client.use_main_show_hint = false;
                 break :get_cmd client.nCmdShow;
             } else {
-                break :get_cmd h.SW_SHOW;
+                break :get_cmd SW_SHOW;
             }
         };
 
@@ -271,129 +271,167 @@ pub const Window = struct {
 
 const win32 = if (build_options.win32_linked) struct {
     pub extern fn RegisterClassExW(
-        lpWndClass: *const h.WNDCLASSEXW,
-    ) callconv(.winapi) h.ATOM;
+        lpWndClass: *const WNDCLASSEXW,
+    ) callconv(.winapi) ATOM;
     pub extern fn UnregisterClassW(
-        lpClassName: h.LPCWSTR,
-        hInstance: h.HINSTANCE,
-    ) callconv(.winapi) h.BOOL;
+        lpClassName: LPCWSTR,
+        hInstance: HINSTANCE,
+    ) callconv(.winapi) BOOL;
 
     pub extern fn GetStartupInfoW(
-        lpStartupInfo: h.LPSTARTUPINFOW,
+        lpStartupInfo: LPSTARTUPINFOW,
     ) callconv(.winapi) void;
 
     pub extern fn LoadCursorW(
-        hInstance: h.HINSTANCE,
-        lpCursorName: h.LPCWSTR,
-    ) callconv(.winapi) h.HCURSOR;
+        hInstance: HINSTANCE,
+        lpCursorName: LPCWSTR,
+    ) callconv(.winapi) HCURSOR;
 
     pub extern fn CreateWindowExW(
-        dwExStyle: h.DWORD,
+        dwExStyle: DWORD,
         lpClassName: StringOrAtom,
-        lpWindowName: h.LPCWSTR,
-        dwStyle: h.DWORD,
+        lpWindowName: LPCWSTR,
+        dwStyle: DWORD,
         X: c_int,
         Y: c_int,
         nWidth: c_int,
         nHeight: c_int,
-        hWndParent: h.HWND,
-        hMenu: h.HMENU,
-        hInstance: h.HINSTANCE,
-        lpParam: h.LPVOID,
-    ) callconv(.winapi) h.HWND;
+        hWndParent: HWND,
+        hMenu: HMENU,
+        hInstance: HINSTANCE,
+        lpParam: LPVOID,
+    ) callconv(.winapi) HWND;
     pub extern fn DestroyWindow(
-        hWnd: h.HWND,
-    ) callconv(.winapi) h.BOOL;
+        hWnd: HWND,
+    ) callconv(.winapi) BOOL;
     pub extern fn UpdateWindow(
-        hWnd: h.HWND,
-    ) callconv(.winapi) h.BOOL;
+        hWnd: HWND,
+    ) callconv(.winapi) BOOL;
     pub extern fn ShowWindow(
-        hWnd: h.HWND,
+        hWnd: HWND,
         cCmdShow: c_int,
-    ) callconv(.winapi) h.BOOL;
+    ) callconv(.winapi) BOOL;
 
     pub extern fn SetWindowLongPtrW(
-        hWnd: h.HWND,
+        hWnd: HWND,
         nIndex: c_int,
-        dwNewLong: h.LONG_PTR,
-    ) callconv(.winapi) h.LONG_PTR;
+        dwNewLong: LONG_PTR,
+    ) callconv(.winapi) LONG_PTR;
     pub extern fn GetWindowLongPtrW(
-        hWnd: h.HWND,
+        hWnd: HWND,
         nIndex: c_int,
-    ) callconv(.winapi) h.LONG_PTR;
+    ) callconv(.winapi) LONG_PTR;
 
     pub extern fn PeekMessageW(
-        lpMsg: h.LPMSG,
-        hWnd: h.HWND,
-        wMsgFilterMin: h.UINT,
-        wMsgFilterMax: h.UINT,
-        wRemoveMsg: h.UINT,
-    ) callconv(.winapi) h.BOOL;
+        lpMsg: LPMSG,
+        hWnd: HWND,
+        wMsgFilterMin: UINT,
+        wMsgFilterMax: UINT,
+        wRemoveMsg: UINT,
+    ) callconv(.winapi) BOOL;
     pub extern fn GetMessageW(
-        lpMsg: h.LPMSG,
-        hWnd: h.HWND,
-        wMsgFilterMin: h.UINT,
-        wMsgFilterMax: h.UINT,
-    ) callconv(.winapi) h.BOOL;
+        lpMsg: LPMSG,
+        hWnd: HWND,
+        wMsgFilterMin: UINT,
+        wMsgFilterMax: UINT,
+    ) callconv(.winapi) BOOL;
     pub extern fn TranslateMessage(
-        lpMsg: *const h.MSG,
-    ) callconv(.winapi) h.BOOL;
+        lpMsg: *const MSG,
+    ) callconv(.winapi) BOOL;
     pub extern fn DispatchMessageW(
-        lpMsg: *const h.MSG,
-    ) callconv(.winapi) h.LRESULT;
+        lpMsg: *const MSG,
+    ) callconv(.winapi) LRESULT;
 
     pub extern fn DefWindowProcW(
-        hWnd: h.HWND,
-        Msg: h.UINT,
-        wParam: h.WPARAM,
-        lParam: h.LPARAM,
-    ) callconv(.winapi) h.LRESULT;
+        hWnd: HWND,
+        Msg: UINT,
+        wParam: WPARAM,
+        lParam: LPARAM,
+    ) callconv(.winapi) LRESULT;
 
     pub extern fn BeginPaint(
-        hWnd: h.HWND,
-        lpPaint: [*c]h.PAINTSTRUCT,
-    ) callconv(.winapi) h.HDC;
+        hWnd: HWND,
+        lpPaint: [*c]PAINTSTRUCT,
+    ) callconv(.winapi) HDC;
     pub extern fn EndPaint(
-        hWnd: h.HWND,
-        lpPaint: [*c]const h.PAINTSTRUCT,
-    ) callconv(.winapi) h.BOOL;
+        hWnd: HWND,
+        lpPaint: [*c]const PAINTSTRUCT,
+    ) callconv(.winapi) BOOL;
 } else @compileError("invalid reference to unlinked Win32 library");
 
 const Client = @This();
 const ScreenSize = root.ScreenSize;
 const ScreenPosition = root.ScreenPosition;
+const missing_backend_error =
+    if (build_options.win32_force_test_host) error.Win32ConnectionFailure
+    else error.SkipZigTest;
 
 const StringOrAtom = packed union {
-    string: h.LPCWSTR,
+    string: LPCWSTR,
     atom: packed struct {
-        word: h.WORD,
+        word: WORD,
         _high: @Type(.{ .int = .{
             .signedness = .unsigned,
-            .bits = @bitSizeOf(h.LPCWSTR) - @bitSizeOf(h.WORD),
+            .bits = @bitSizeOf(LPCWSTR) - @bitSizeOf(WORD),
         }}) = 0,
     },
 
-    pub inline fn fromAtom(atom: h.ATOM) StringOrAtom {
+    pub inline fn fromAtom(atom: ATOM) StringOrAtom {
         return .{ .atom = .{ .word = atom }};
     }
 };
-comptime { debug.assert(h.ATOM == h.WORD); }
-comptime { debug.assert(@bitSizeOf(h.WORD) == 16); }
-comptime { debug.assert(@bitSizeOf(StringOrAtom) == @bitSizeOf(h.LPCWSTR)); }
+comptime { debug.assert(ATOM == WORD); }
+comptime { debug.assert(@bitSizeOf(WORD) == 16); }
+comptime { debug.assert(@bitSizeOf(StringOrAtom) == @bitSizeOf(LPCWSTR)); }
 test StringOrAtom {
-    const atom: h.ATOM = 0x63;
+    const atom: ATOM = 0x63;
     const as_macro: usize = @intFromPtr(MAKEINTATOM(atom));
     const as_union: usize = @bitCast(StringOrAtom.fromAtom(atom));
     try testing.expectEqual(as_macro, as_union);
 }
 
 // translate-c (as of 0.15.2) has trouble with `winbase.h`
-inline fn MAKEINTATOM(atom: h.ATOM) ?[*:0]const align(1) u16 {
+inline fn MAKEINTATOM(atom: ATOM) ?[*:0]const align(1) u16 {
     return @ptrFromInt(@as(u16, @intCast(atom)));
 }
 
 // Comes from `winbase.h`
 const STARTF_USESHOWWINDOW: c_int = 0x00000001;
+
+const SW_SHOW               = h.SW_SHOW;
+const SW_SHOWDEFAULT        = h.SW_SHOWDEFAULT;
+const CW_USEDEFAULT         = h.CW_USEDEFAULT;
+const PM_REMOVE             = h.PM_REMOVE;
+const IDC_ARROW             = h.IDC_ARROW;
+const WS_OVERLAPPEDWINDOW   = h.WS_OVERLAPPEDWINDOW;
+const WM_CLOSE              = h.WM_CLOSE;
+const WM_PAINT              = h.WM_PAINT;
+const WM_ERASEBKGND         = h.WM_ERASEBKGND;
+
+const BOOL                  = h.BOOL;
+const UINT                  = h.UINT;
+const WORD                  = h.WORD;
+const DWORD                 = h.DWORD;
+const LONG_PTR              = h.LONG_PTR;
+const ATOM                  = h.ATOM;
+const HINSTANCE             = h.HINSTANCE;
+const HWND                  = h.HWND;
+const HDC                   = h.HDC;
+const HMENU                 = h.HMENU;
+const HCURSOR               = h.HCURSOR;
+const WPARAM                = h.WPARAM;
+const LPARAM                = h.LPARAM;
+const LRESULT               = h.LRESULT;
+
+const MSG                   = h.MSG;
+const STARTUPINFOW          = h.STARTUPINFOW;
+const WNDCLASSEXW           = h.WNDCLASSEXW;
+const PAINTSTRUCT           = h.PAINTSTRUCT;
+
+const LPVOID                = h.LPVOID;
+const LPCWSTR               = h.LPCWSTR;
+const LPMSG                 = h.LPMSG;
+const LPSTARTUPINFOW        = h.LPSTARTUPINFOW;
 
 const h = if (build_options.win32_linked) @import("win32")
     else @compileError("invalid reference to unlinked Win32 headers");

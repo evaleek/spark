@@ -1,6 +1,6 @@
-display: *h.Display,
+display: *DisplayHandle,
 xrr_available: bool,
-delete_window_atom: h.Atom,
+delete_window_atom: Atom,
 err: u8,
 
 // TODO error checking in this module could generally be handled less naively:
@@ -16,9 +16,9 @@ pub fn poll(client: Client, windows: []const *Window) ?struct { ?*Window, Event 
     debug.assert(pending >= 0); // TODO confirm never negative
 
     while (pending > 0) : (pending -= 1) {
-        const x_event: h.XEvent = get: {
+        const x_event: XEvent = get: {
             // TODO needs to be zeroed or can be undefined?
-            var e = mem.zeroes(h.XEvent);
+            var e = mem.zeroes(XEvent);
             // TODO check this isn't returning something important
             _ = x11.XNextEvent(client.display, &e);
             break :get e;
@@ -36,9 +36,9 @@ pub fn poll(client: Client, windows: []const *Window) ?struct { ?*Window, Event 
 /// and block if there are not yet pending events.
 pub fn wait(client: Client, windows: []const *Window) ?struct { ?*Window, Event } {
     while (true) {
-        const x_event: h.XEvent = get: {
+        const x_event: XEvent = get: {
             // TODO needs to be zeroed or can be undefined?
-            var e = mem.zeroes(h.XEvent);
+            var e = mem.zeroes(XEvent);
             // TODO check this isn't returning something important
             _ = x11.XNextEvent(client.display, &e);
             break :get e;
@@ -53,11 +53,11 @@ pub fn wait(client: Client, windows: []const *Window) ?struct { ?*Window, Event 
 pub const Event = root.Event;
 pub const Message = root.Message;
 
-fn windowFromEvent(e: h.XEvent, windows: []const *Window) ?*Window {
+fn windowFromEvent(e: XEvent, windows: []const *Window) ?*Window {
     const handle = switch (e.@"type") {
-        h.Expose => e.xexpose.window,
-        h.ConfigureNotify => e.xconfigure.window,
-        h.ClientMessage => e.xclient.window,
+        Expose => e.xexpose.window,
+        ConfigureNotify => e.xconfigure.window,
+        ClientMessage => e.xclient.window,
         else => null,
     };
 
@@ -66,18 +66,18 @@ fn windowFromEvent(e: h.XEvent, windows: []const *Window) ?*Window {
     } else null;
 }
 
-fn processEvent(client: Client, e: h.XEvent, window: ?*Window) ?Event {
+fn processEvent(client: Client, e: XEvent, window: ?*Window) ?Event {
     switch (e.@"type") {
         else => return null,
 
-        h.Expose => return .{ .redraw = .{
+        Expose => return .{ .redraw = .{
             .x = @intCast(e.xexpose.x),
             .y = @intCast(e.xexpose.y),
             .width = @intCast(e.xexpose.width),
             .height = @intCast(e.xexpose.height),
         }},
 
-        h.ConfigureNotify => {
+        ConfigureNotify => {
             const new_width: ScreenSize = @intCast(e.xconfigure.width);
             const new_height: ScreenSize = @intCast(e.xconfigure.height);
             const new_x: ScreenPosition = @intCast(e.xconfigure.x);
@@ -122,7 +122,7 @@ fn processEvent(client: Client, e: h.XEvent, window: ?*Window) ?Event {
             }
         },
 
-        h.ClientMessage => {
+        ClientMessage => {
             switch (e.xclient.format) {
                 8, 16 => return null,
                 32 => {
@@ -182,16 +182,16 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
     errdefer client.display = undefined;
     errdefer _ = x11.XCloseDisplay(client.display);
 
-    client.err = h.Success;
+    client.err = Success;
     errdefer client.err = undefined;
 
-    if (@atomicLoad(h.XContext, &context_key, .acquire) == null_context) {
-        const context = h.XUniqueContext();
+    if (@atomicLoad(XContext, &context_key, .acquire) == null_context) {
+        const context = XUniqueContext();
         debug.assert(context != null_context);
-        @atomicStore(h.XContext, &context_key, context, .release);
+        @atomicStore(XContext, &context_key, context, .release);
     }
 
-    const context = @atomicLoad(h.XContext, &context_key, .acquire);
+    const context = @atomicLoad(XContext, &context_key, .acquire);
 
     switch (x11.XSaveContext(
         client.display,
@@ -200,7 +200,7 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
         @ptrCast(client),
     )) {
         0 => {},
-        h.XCNOMEM => return error.OutOfMemory,
+        XCNOMEM => return error.OutOfMemory,
         else => unreachable,
     }
     errdefer {
@@ -210,7 +210,7 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
             context,
         )) {
             0 => {},
-            h.XCNOENT => unreachable,
+            XCNOENT => unreachable,
             else => unreachable,
         }
     }
@@ -221,37 +221,35 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
         client.xrr_available = x11.XRRQueryExtension(
             client.display,
             &event_base, &error_base,
-        ) == h.True;
+        ) == True;
     }
 
-    client.delete_window_atom = x11.XInternAtom(client.display, "WM_DELETE_WINDOW", h.False);
+    client.delete_window_atom = x11.XInternAtom(client.display, "WM_DELETE_WINDOW", False);
     switch (client.checkError()) {
-        h.Success => {},
-        h.BadAlloc => return error.OutOfMemory,
-        h.BadValue => unreachable, // TODO error or undefined?
+        Success => {},
+        BadAlloc => return error.OutOfMemory,
+        BadValue => unreachable, // TODO error or undefined?
         else => unreachable,
     }
-    debug.assert(client.delete_window_atom != h.None);
+    debug.assert(client.delete_window_atom != None);
 }
 
 test "no context before set" {
     if (build_options.x11_linked) {
-        const display = x11.XOpenDisplay(null) orelse return
-            if (build_options.x11_force_test_host) error.X11ConnectionFailure
-            else error.SkipZigTest;
+        const display = x11.XOpenDisplay(null) orelse return missing_backend_error;
         defer _ = x11.XCloseDisplay(display);
-        const context = h.XUniqueContext();
+        const context = XUniqueContext();
 
         var ptr: [*c]u8 = null;
 
-        try testing.expectEqual(h.XCNOENT, x11.XFindContext(
+        try testing.expectEqual(XCNOENT, x11.XFindContext(
             display,
             @intFromPtr(display),
             context,
             &ptr
         ));
 
-        try testing.expectEqual(h.XCNOENT, x11.XDeleteContext(
+        try testing.expectEqual(XCNOENT, x11.XDeleteContext(
             display,
             @intFromPtr(display),
             context,
@@ -267,7 +265,7 @@ pub fn disconnect(client: *Client) void {
     defer client.* = undefined;
 
     {
-        const context = @atomicLoad(h.XContext, &context_key, .acquire);
+        const context = @atomicLoad(XContext, &context_key, .acquire);
         if (context != null_context) {
             switch (x11.XDeleteContext(
                 client.display,
@@ -275,7 +273,7 @@ pub fn disconnect(client: *Client) void {
                 context,
             )) {
                 0 => {},
-                h.XCNOENT => log.err("missing X context to delete at deinit", .{}),
+                XCNOENT => log.err("missing X context to delete at deinit", .{}),
                 else => unreachable,
             }
         } else {
@@ -286,8 +284,8 @@ pub fn disconnect(client: *Client) void {
     _ = x11.XCloseDisplay(client.display);
 }
 
-fn fromContext(display: *h.Display) !*Client {
-    const context = @atomicLoad(h.XContext, &context_key, .acquire);
+fn fromContext(display: *DisplayHandle) !*Client {
+    const context = @atomicLoad(XContext, &context_key, .acquire);
     if (context != null_context) {
         var ptr: [*c]u8 = null;
 
@@ -298,7 +296,7 @@ fn fromContext(display: *h.Display) !*Client {
             &ptr,
         )) {
             0 => {},
-            h.XCNOENT => return error.ContextNotFound,
+            XCNOENT => return error.ContextNotFound,
             else => unreachable,
         }
 
@@ -313,13 +311,13 @@ fn fromContext(display: *h.Display) !*Client {
 }
 
 fn checkError(client: *Client) u8 {
-    _ = x11.XSync(client.display, h.False);
+    _ = x11.XSync(client.display, False);
     const err = @atomicLoad(@FieldType(Client, "err"), &client.err, .acquire);
-    @atomicStore(@FieldType(Client, "err"), &client.err, h.Success, .release);
+    @atomicStore(@FieldType(Client, "err"), &client.err, Success, .release);
     return err;
 }
 
-fn onError(display: *h.Display, event: *h.XErrorEvent) callconv(.c) c_int {
+fn onError(display: *DisplayHandle, event: *XErrorEvent) callconv(.c) c_int {
     const client: *Client = fromContext(display) catch |err| {
         log.err("{t} in X error handler", .{ err });
         return -1;
@@ -330,7 +328,7 @@ fn onError(display: *h.Display, event: *h.XErrorEvent) callconv(.c) c_int {
         // This would go more nicely after XCloseDisplay() in disconnect(),
         // but once XCloseDisplay() is called
         // checking this error synchronously becomes a potential segfault
-        h.BadGC => log.warn("pending graphics context operations at X11 disconnect", .{}),
+        BadGC => log.warn("pending graphics context operations at X11 disconnect", .{}),
     }
 
     @atomicStore(@FieldType(Client, "err"), &client.err, event.error_code, .release);
@@ -349,8 +347,8 @@ pub const Display = struct {
 
     pub fn iterate(client: Client) !Iterator {
         if (client.xrr_available) {
-            const root_window: h.Window = h.DefaultRootWindow(client.display);
-            const resources: *h.XRRScreenResources = x11.XRRGetScreenResources(
+            const root_window: WindowHandle = DefaultRootWindow(client.display);
+            const resources: *XRRScreenResources = x11.XRRGetScreenResources(
                 client.display, root_window,
             ) orelse return error.Unavailable;
 
@@ -365,8 +363,8 @@ pub const Display = struct {
     }
 
     pub const Iterator = struct {
-        display: *h.Display,
-        resources: *h.XRRScreenResources,
+        display: *DisplayHandle,
+        resources: *XRRScreenResources,
         index: usize,
 
         /// Reference fields in the Info struct (e.g. `.name[]`)
@@ -381,7 +379,7 @@ pub const Display = struct {
             return while (iter.index < iter.count()) {
                 defer iter.index += 1;
 
-                const output_info: *h.XRROutputInfo = x11.XRRGetOutputInfo(
+                const output_info: *XRROutputInfo = x11.XRRGetOutputInfo(
                     iter.display,
                     iter.resources,
                     iter.resources.outputs[iter.index],
@@ -389,10 +387,10 @@ pub const Display = struct {
                 // TODO free the info. needs refactor so user can see name reference
 
                 break Info{
-                    .active = output_info.connection == h.RR_Connected,
+                    .active = output_info.connection == RR_Connected,
                     .name = output_info.name[0..@intCast(output_info.nameLen)],
-                    .size = if (output_info.crtc != h.None) get_size: {
-                        const crtc_info: *h.XRRCrtcInfo = x11.XRRGetCrtcInfo(
+                    .size = if (output_info.crtc != None) get_size: {
+                        const crtc_info: *XRRCrtcInfo = x11.XRRGetCrtcInfo(
                             iter.display,
                             iter.resources,
                             output_info.crtc,
@@ -416,7 +414,7 @@ pub const Display = struct {
 
         pub fn atIndex(iter: Iterator, index: usize) !Info {
             if (index < iter.count()) {
-                const output_info: *h.XRROutputInfo = x11.XRRGetOutputInfo(
+                const output_info: *XRROutputInfo = x11.XRRGetOutputInfo(
                     iter.display,
                     iter.resources,
                     iter.resources.outputs[index],
@@ -424,10 +422,10 @@ pub const Display = struct {
                 // TODO free the info. needs refactor so user can see name reference
 
                 return Info{
-                    .active = output_info.connection == h.RR_Connected,
+                    .active = output_info.connection == RR_Connected,
                     .name = output_info.name[0..@intCast(output_info.nameLen)],
-                    .size = if (output_info.crtc != h.None) get_size: {
-                        const crtc_info: *h.XRRCrtcInfo = x11.XRRGetCrtcInfo(
+                    .size = if (output_info.crtc != None) get_size: {
+                        const crtc_info: *XRRCrtcInfo = x11.XRRGetCrtcInfo(
                             iter.display,
                             iter.resources,
                             output_info.crtc,
@@ -468,7 +466,7 @@ pub fn showWindow(client: *Client, window: Window) void {
 }
 
 pub const Window = struct {
-    handle: h.Window,
+    handle: WindowHandle,
 
     x: ScreenPosition,
     y: ScreenPosition,
@@ -483,34 +481,34 @@ pub const Window = struct {
         // (a modern machine that uses Xrandr for multiple monitor monitors).
         // Maybe TODO enumerate possible Screens if Xrandr is unavailable
 
-        const screen: c_int = h.DefaultScreen(client.display);
-        const root_window: h.Window = h.RootWindow(client.display, screen);
+        const screen: c_int = DefaultScreen(client.display);
+        const root_window: WindowHandle = RootWindow(client.display, screen);
 
         // TODO inject as function
         const display_x: ScreenPosition,
         const display_y: ScreenPosition = display_origin: {
             if (client.xrr_available) {
-                const resources: *h.XRRScreenResources = x11.XRRGetScreenResources(
+                const resources: *XRRScreenResources = x11.XRRGetScreenResources(
                     client.display, root_window,
                 ) orelse break :display_origin .{ 0, 0 };
                 defer x11.XRRFreeScreenResources(resources);
 
-                const outputs: []const h.RROutput =
+                const outputs: []const RROutput =
                     resources.outputs[0..@intCast(resources.noutput)];
 
                 if (options.display) |display_selection| {
                     switch (display_selection) {
                         .index => |index| {
                             if (outputs.len > index) {
-                                const output_info: *h.XRROutputInfo = x11.XRRGetOutputInfo(
+                                const output_info: *XRROutputInfo = x11.XRRGetOutputInfo(
                                     client.display,
                                     resources,
                                     outputs[index],
                                 ).?;
                                 defer x11.XRRFreeOutputInfo(output_info);
 
-                                if (output_info.crtc != h.None) {
-                                    const crtc_info: *h.XRRCrtcInfo = x11.XRRGetCrtcInfo(
+                                if (output_info.crtc != None) {
+                                    const crtc_info: *XRRCrtcInfo = x11.XRRGetCrtcInfo(
                                         client.display,
                                         resources,
                                         output_info.crtc,
@@ -527,15 +525,15 @@ pub const Window = struct {
 
                         .name => |select_name| {
                             for (outputs) |output| {
-                                const output_info: *h.XRROutputInfo = x11.XRRGetOutputInfo(
+                                const output_info: *XRROutputInfo = x11.XRRGetOutputInfo(
                                     client.display,
                                     resources,
                                     output,
                                 ).?;
                                 defer x11.XRRFreeOutputInfo(output_info);
 
-                                if (output_info.crtc != h.None) {
-                                    const crtc_info: *h.XRRCrtcInfo = x11.XRRGetCrtcInfo(
+                                if (output_info.crtc != None) {
+                                    const crtc_info: *XRRCrtcInfo = x11.XRRGetCrtcInfo(
                                         client.display,
                                         resources,
                                         output_info.crtc,
@@ -557,18 +555,18 @@ pub const Window = struct {
 
                     return error.InvalidDisplay;
                 } else {
-                    const primary: h.RROutput = x11.XRRGetOutputPrimary(client.display, root_window);
+                    const primary: RROutput = x11.XRRGetOutputPrimary(client.display, root_window);
                     for (outputs) |output| {
                         if (output == primary) {
-                            const output_info: *h.XRROutputInfo = x11.XRRGetOutputInfo(
+                            const output_info: *XRROutputInfo = x11.XRRGetOutputInfo(
                                 client.display,
                                 resources,
                                 output,
                             ).?;
                             defer x11.XRRFreeOutputInfo(output_info);
 
-                            if (output_info.crtc != h.None) {
-                                const crtc_info: *h.XRRCrtcInfo = x11.XRRGetCrtcInfo(
+                            if (output_info.crtc != None) {
+                                const crtc_info: *XRRCrtcInfo = x11.XRRGetCrtcInfo(
                                     client.display,
                                     resources,
                                     output_info.crtc,
@@ -592,15 +590,15 @@ pub const Window = struct {
             }
         };
 
-        var attributes = mem.zeroes(h.XSetWindowAttributes);
+        var attributes = mem.zeroes(XSetWindowAttributes);
         attributes.event_mask |=
-            h.ExposureMask |
-            h.KeyPressMask |
-            h.KeyReleaseMask |
-            h.ButtonPressMask |
-            h.ButtonReleaseMask |
-            h.PointerMotionMask |
-            h.StructureNotifyMask
+            ExposureMask |
+            KeyPressMask |
+            KeyReleaseMask |
+            ButtonPressMask |
+            ButtonReleaseMask |
+            PointerMotionMask |
+            StructureNotifyMask
         ;
 
         window.x = display_x + ( options.origin_x orelse root.fallback_default_window_origin_x );
@@ -612,40 +610,40 @@ pub const Window = struct {
             client.display, root_window,
             window.x, window.y,
             window.width, window.height, 0,
-            h.CopyFromParent, h.InputOutput,
-            @ptrFromInt(h.CopyFromParent),
-            h.CWEventMask, &attributes,
+            CopyFromParent, InputOutput,
+            @ptrFromInt(CopyFromParent),
+            CWEventMask, &attributes,
         );
         switch (client.checkError()) {
-            h.Success => {},
+            Success => {},
             // The server failed to allocate the requested resource or server memory.
-            h.BadAlloc => return error.OutOfMemory,
+            BadAlloc => return error.OutOfMemory,
             // A value for a Colormap argument does not name a defined Colormap.
-            h.BadColor => unreachable,
+            BadColor => unreachable,
             // A value for a Cursor argument does not name a defined Cursor.
-            h.BadCursor => unreachable,
+            BadCursor => unreachable,
             // The values do not exist for an InputOnly window.
             // Some argument or pair of arguments has the correct type and range
             // but fails to match in some other way required by the request.
-            h.BadMatch => unreachable,
+            BadMatch => unreachable,
             // A value for a Pixmap argument does not name a defined Pixmap.
-            h.BadPixmap => unreachable,
+            BadPixmap => unreachable,
             // Some numeric value falls outside the range of values accepted by the request.
             // Unless a specific range is specified for an argument,
             // the full range defined by the argument's type is accepted.
             // Any argument defined as a set of alternatives can generate this error.
-            h.BadValue => unreachable,
+            BadValue => unreachable,
             // A value for a window argument does not name a defined window.
-            h.BadWindow => unreachable,
+            BadWindow => unreachable,
             else => unreachable,
         }
         errdefer _ = x11.XDestroyWindow(client.display, window.handle);
 
         _ = x11.XStoreName(client.display, window.handle, options.name.ptr);
         switch (client.checkError()) {
-            h.Success => {},
-            h.BadAlloc => return error.OutOfMemory,
-            h.BadWindow => unreachable,
+            Success => {},
+            BadAlloc => return error.OutOfMemory,
+            BadWindow => unreachable,
             else => unreachable,
         }
 
@@ -656,9 +654,9 @@ pub const Window = struct {
             1,
         );
         switch (client.checkError()) {
-            h.Success => {},
-            h.BadAlloc => return error.OutOfMemory,
-            h.BadWindow => unreachable,
+            Success => {},
+            BadAlloc => return error.OutOfMemory,
+            BadWindow => unreachable,
             else => unreachable,
         }
     }
@@ -669,8 +667,8 @@ pub const Window = struct {
         switch (@import("builtin").mode) {
             .Debug, .ReleaseSafe => {
                 switch (client.checkError()) {
-                    h.Success => {},
-                    h.BadWindow => log.err(
+                    Success => {},
+                    BadWindow => log.err(
                         "an X11 window ({d}) was invalid at destruction",
                         .{ window.handle },
                     ),
@@ -686,55 +684,53 @@ pub const Window = struct {
     pub fn show(window: Window, client: *Client) void {
         _ = x11.XMapWindow(client.display, window.handle);
         switch (client.checkError()) {
-            h.Success => {},
-            h.BadWindow => unreachable, // TODO is reachable?
+            Success => {},
+            BadWindow => unreachable, // TODO is reachable?
             else => unreachable,
         }
     }
 };
 
-var context_key: h.XContext = null_context;
-const null_context: h.XContext = 0;
+var context_key: XContext = null_context;
+const null_context: XContext = 0;
 
 const x11 = if (build_options.x11_linked) struct {
-    pub extern fn XOpenDisplay(display_name: ?[*:0]const u8) callconv(.c) ?*h.Display;
-    pub extern fn XCloseDisplay(display: *h.Display) callconv(.c) c_int;
+    pub extern fn XOpenDisplay(display_name: ?[*:0]const u8) callconv(.c) ?*DisplayHandle;
+    pub extern fn XCloseDisplay(display: *DisplayHandle) callconv(.c) c_int;
 
-    pub extern fn XFlush(display: *h.Display) callconv(.c) c_int;
-    pub extern fn XSync(display: *h.Display, discard: h.Bool) callconv(.c) c_int;
+    pub extern fn XFlush(display: *DisplayHandle) callconv(.c) c_int;
+    pub extern fn XSync(display: *DisplayHandle, discard: Bool) callconv(.c) c_int;
 
-    pub extern fn XPending(display: *h.Display) callconv(.c) c_int;
-    pub extern fn XNextEvent(display: *h.Display, *h.XEvent) callconv(.c) c_int;
-
-    pub extern fn XDefaultRootWindow(display: *h.Display) callconv(.c) h.Window;
+    pub extern fn XPending(display: *DisplayHandle) callconv(.c) c_int;
+    pub extern fn XNextEvent(display: *DisplayHandle, *XEvent) callconv(.c) c_int;
 
     pub extern fn XInternAtom(
-        display: *h.Display,
+        display: *DisplayHandle,
         atom_name: [*:0]const u8,
-        only_if_exists: h.Bool,
-    ) callconv(.c) h.Atom;
+        only_if_exists: Bool,
+    ) callconv(.c) Atom;
 
     pub extern fn XSaveContext(
-        display: *h.Display,
-        rid: h.XID,
-        context: h.XContext,
-        data: h.XPointer,
+        display: *DisplayHandle,
+        rid: XID,
+        context: XContext,
+        data: XPointer,
     ) callconv(.c) c_int;
     pub extern fn XFindContext(
-        display: *h.Display,
-        rid: h.XID,
-        context: h.XContext,
-        data_return: *h.XPointer,
+        display: *DisplayHandle,
+        rid: XID,
+        context: XContext,
+        data_return: *XPointer,
     ) callconv(.c) c_int;
     pub extern fn XDeleteContext(
-        display: *h.Display,
-        rid: h.XID,
-        context: h.XContext,
+        display: *DisplayHandle,
+        rid: XID,
+        context: XContext,
     ) callconv(.c) c_int;
 
     pub extern fn XCreateWindow(
-        display: *h.Display,
-        parent: h.Window,
+        display: *DisplayHandle,
+        parent: WindowHandle,
         x: c_int,
         y: c_int,
         width: c_uint,
@@ -742,68 +738,123 @@ const x11 = if (build_options.x11_linked) struct {
         border_width: c_uint,
         depth: c_int,
         class: c_uint,
-        visual: ?*h.Visual,
+        visual: ?*Visual,
         valuemask: c_ulong,
-        attributes: *h.XSetWindowAttributes,
-    ) callconv(.c) h.Window;
+        attributes: *XSetWindowAttributes,
+    ) callconv(.c) WindowHandle;
     pub extern fn XDestroyWindow(
-        display: *h.Display,
-        w: h.Window,
+        display: *DisplayHandle,
+        w: WindowHandle,
     ) callconv(.c) c_int;
 
     pub extern fn XStoreName(
-        display: *h.Display,
-        w: h.Window,
+        display: *DisplayHandle,
+        w: WindowHandle,
         window_name: [*:0]const u8,
     ) callconv(.c) c_int;
     pub extern fn XMapWindow(
-        display: *h.Display,
-        w: h.Window,
+        display: *DisplayHandle,
+        w: WindowHandle,
     ) callconv(.c) c_int;
     pub extern fn XSetWMProtocols(
-        display: *h.Display,
-        w: h.Window,
-        protocols: [*]h.Atom,
+        display: *DisplayHandle,
+        w: WindowHandle,
+        protocols: [*]Atom,
         count: c_int,
-    ) callconv(.c) h.Status;
+    ) callconv(.c) Status;
 
     pub extern fn XRRQueryExtension(
-        dpy: *h.Display,
+        dpy: *DisplayHandle,
         event_base_return: *c_int,
         error_base_return: *c_int,
-    ) callconv(.c) h.Bool;
+    ) callconv(.c) Bool;
 
     pub extern fn XRRGetScreenResources(
-        display: *h.Display,
-        window: h.Window,
-    ) callconv(.c) ?*h.XRRScreenResources;
+        display: *DisplayHandle,
+        window: WindowHandle,
+    ) callconv(.c) ?*XRRScreenResources;
     pub extern fn XRRFreeScreenResources(
-        resources: *h.XRRScreenResources,
+        resources: *XRRScreenResources,
     ) callconv(.c) void;
 
     pub extern fn XRRGetOutputPrimary(
-        dpy: *h.Display,
-        window: h.Window,
-    ) callconv(.c) h.RROutput;
+        dpy: *DisplayHandle,
+        window: WindowHandle,
+    ) callconv(.c) RROutput;
 
     pub extern fn XRRGetOutputInfo(
-        dpy: *h.Display,
-        resources: *h.XRRScreenResources,
-        output: h.RROutput,
-    ) callconv(.c) ?*h.XRROutputInfo;
+        dpy: *DisplayHandle,
+        resources: *XRRScreenResources,
+        output: RROutput,
+    ) callconv(.c) ?*XRROutputInfo;
     pub extern fn XRRFreeOutputInfo(
-        outputInfo: *h.XRROutputInfo,
+        outputInfo: *XRROutputInfo,
     ) callconv(.c) void;
 
     pub extern fn XRRGetCrtcInfo(
-        dpy: *h.Display,
-        resources: *h.XRRScreenResources,
-        crtc: h.RRCrtc,
-    ) callconv(.c) ?*h.XRRCrtcInfo;
+        dpy: *DisplayHandle,
+        resources: *XRRScreenResources,
+        crtc: RRCrtc,
+    ) callconv(.c) ?*XRRCrtcInfo;
     pub extern fn XRRFreeCrtcInfo(
-        crtcInfo: *h.XRRCrtcInfo,
+        crtcInfo: *XRRCrtcInfo,
     ) callconv(.c) void;
 } else @compileError("invalid reference to unlinked X11 library");
+
+const XCNOMEM               = h.XCNOMEM;
+const XCNOENT               = h.XCNOENT;
+
+const None                  = h.None;
+const True                  = h.True;
+const False                 = h.False;
+const Success               = h.Success;
+const BadAlloc              = h.BadAlloc;
+const BadValue              = h.BadValue;
+const BadWindow             = h.BadWindow;
+const BadGC                 = h.BadGC;
+const BadColor              = h.BadColor;
+const BadCursor             = h.BadCursor;
+const BadMatch              = h.BadMatch;
+const BadPixmap             = h.BadPixmap;
+const RR_Connected          = h.RR_Connected;
+const CopyFromParent        = h.CopyFromParent;
+const InputOutput           = h.InputOutput;
+
+const CWEventMask           = h.CWEventMask;
+const ExposureMask          = h.ExposureMask;
+const KeyPressMask          = h.KeyPressMask;
+const KeyReleaseMask        = h.KeyReleaseMask;
+const ButtonPressMask       = h.ButtonPressMask;
+const ButtonReleaseMask     = h.ButtonReleaseMask;
+const PointerMotionMask     = h.PointerMotionMask;
+const StructureNotifyMask   = h.StructureNotifyMask;
+
+const Expose                = h.Expose;
+const ConfigureNotify       = h.ConfigureNotify;
+const ClientMessage         = h.ClientMessage;
+
+const Bool                  = h.Bool;
+const Atom                  = h.Atom;
+const XID                   = h.XID;
+const XPointer              = h.XPointer;
+const Status                = h.Status;
+const DisplayHandle         = h.Display;
+const WindowHandle          = h.Window;
+const Visual                = h.Visual;
+const RROutput              = h.RROutput;
+const RRCrtc                = h.RRCrtc;
+const XContext              = h.XContext;
+const XEvent                = h.XEvent;
+const XErrorEvent           = h.XErrorEvent;
+const XSetWindowAttributes  = h.XSetWindowAttributes;
+const XRRScreenResources    = h.XRRScreenResources;
+
+const RootWindow            = h.RootWindow;
+const DefaultRootWindow     = h.DefaultRootWindow;
+const DefaultScreen         = h.DefaultScreen;
+const XUniqueContext        = h.XUniqueContext;
+const XRROutputInfo         = h.XRROutputInfo;
+const XRRCrtcInfo           = h.XRRCrtcInfo;
 
 const h = if (build_options.x11_linked) @import("x11")
     else @compileError("invalid reference to unlinked X11 headers");
@@ -811,6 +862,9 @@ const h = if (build_options.x11_linked) @import("x11")
 const Client = @This();
 const ScreenSize = root.ScreenSize;
 const ScreenPosition = root.ScreenPosition;
+const missing_backend_error =
+    if (build_options.x11_force_test_host) error.X11ConnectionFailure
+    else error.SkipZigTest;
 
 const debug = std.debug;
 const testing = std.testing;
