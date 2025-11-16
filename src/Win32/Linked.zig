@@ -112,6 +112,8 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
             ERROR_CLASS_ALREADY_EXISTS => error.WindowClassAlreadyExists,
             ERROR_INVALID_PARAMETER => error.InvalidParameter,
             ERROR_ACCESS_DENIED => error.AccessDenied,
+            // Windows does not seem to actually validate hInstance in RegisterClassW?
+            // because passing bogus hInstance values never triggered this in testing
             ERROR_INVALID_HANDLE => error.InvalidInstanceHandle,
             else => |err| unsupported: {
                 if (log_unrecognized_errors) logSystemError(err) catch {};
@@ -121,8 +123,26 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
             error.InvalidParameter => unreachable,
             error.InvalidInstanceHandle => error.InvalidOptions,
             error.WindowClassAlreadyExists => error.DuplicateClient,
+            error.AccessDenied => error.ConnectionFailed,
             error.UnsupportedWindowsClassRegistrationError => error.ConnectionFailed,
         };
+    }
+}
+
+test "double connect class already exists failure" {
+    if (build_options.win32_linked) {
+        var client_a: Client = undefined;
+        var client_b: Client = undefined;
+
+        client_a.connect(.{}) catch |err| switch (err) {
+            error.HostDown => return error.SkipZigTest,
+            else => return err,
+        };
+        defer client_a.disconnect();
+
+        try testing.expectError(error.DuplicateClient, client_b.connect(.{}));
+    } else {
+        return error.SkipZigTest;
     }
 }
 
@@ -350,7 +370,7 @@ const win32 = if (build_options.win32_linked) struct {
         dwLanguageId: DWORD,
         lpBuffer: LPWSTR,
         nSize: DWORD,
-        Arguments: ?std.builtin.VaList,
+        Arguments: ?*anyopaque, // [*c]va_list (always null)
     ) callconv(.winapi) DWORD;
 
     pub extern fn LocalFree(hMem: HLOCAL) callconv(.winapi) HLOCAL;
