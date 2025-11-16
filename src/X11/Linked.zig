@@ -34,7 +34,7 @@ pub fn poll(client: Client, windows: []const *Window) ?struct { ?*Window, Event 
 
 /// Get the next pending event for all passed windows,
 /// and block if there are not yet pending events.
-pub fn wait(client: Client, windows: []const *Window) ?struct { ?*Window, Event } {
+pub fn wait(client: Client, windows: []const *Window) struct { ?*Window, Event } {
     while (true) {
         const x_event: XEvent = get: {
             // TODO needs to be zeroed or can be undefined?
