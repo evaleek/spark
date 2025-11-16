@@ -18,6 +18,10 @@ pub const ScreenPosition = i32;
 
 pub const ConnectionError = error{
     OutOfMemory,
+    /// One or more of the `ConnectOptions` was invalid
+    InvalidOptions,
+    /// A client has already been registered
+    DuplicateClient,
     HostDown,
     ConnectionFailed,
 };

@@ -107,7 +107,22 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
         .hbrBackground = 0, // TODO is this ever relevant?
     });
     if (client.direct_window_class == 0) {
-        // TODO failure
+        return switch (inner_err: { break :inner_err switch (win32.GetLastError()) {
+            ERROR_SUCCESS => unreachable,
+            ERROR_CLASS_ALREADY_EXISTS => error.WindowClassAlreadyExists,
+            ERROR_INVALID_PARAMETER => error.InvalidParameter,
+            ERROR_ACCESS_DENIED => error.AccessDenied,
+            ERROR_INVALID_HANDLE => error.InvalidInstanceHandle,
+            else => |err| unsupported: {
+                if (log_unrecognized_errors) logSystemError(err) catch {};
+                break :unsupported error.UnsupportedWindowsClassRegistrationError;
+            },
+        };}) {
+            error.InvalidParameter => unreachable,
+            error.InvalidInstanceHandle => error.InvalidOptions,
+            error.WindowClassAlreadyExists => error.DuplicateClient,
+            error.UnsupportedWindowsClassRegistrationError => error.ConnectionFailed,
+        };
     }
 }
 
@@ -269,7 +284,77 @@ pub const Window = struct {
     }
 };
 
+const StringOrAtom = packed union {
+    string: LPCWSTR,
+    atom: packed struct {
+        word: WORD,
+        _high: @Type(.{ .int = .{
+            .signedness = .unsigned,
+            .bits = @bitSizeOf(LPCWSTR) - @bitSizeOf(WORD),
+        }}) = 0,
+    },
+
+    pub inline fn fromAtom(atom: ATOM) StringOrAtom {
+        return .{ .atom = .{ .word = atom }};
+    }
+};
+comptime { debug.assert(ATOM == WORD); }
+comptime { debug.assert(@bitSizeOf(WORD) == 16); }
+comptime { debug.assert(@bitSizeOf(StringOrAtom) == @bitSizeOf(LPCWSTR)); }
+test StringOrAtom {
+    const atom: ATOM = 0x63;
+    const as_macro: usize = @intFromPtr(MAKEINTATOM(atom));
+    const as_union: usize = @bitCast(StringOrAtom.fromAtom(atom));
+    try testing.expectEqual(as_macro, as_union);
+}
+
+fn logSystemError(err: DWORD) !void {
+    var msg: LPWSTR = null;
+
+    const len: DWORD = win32.FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER |
+        FORMAT_MESSAGE_FROM_SYSTEM |
+        FORMAT_MESSAGE_IGNORE_INSERTS,
+        null,
+        err,
+        0,
+        @ptrCast(&msg), // system allocates
+        0,
+        null,
+    );
+
+    if (len == 0) return error.NoMessage;
+    if (msg) |message| {
+        std.log.err(
+            "unsupported win32 system error code 0x{x} (error message follows)\n{f}",
+            .{ err, unicode.fmtUtf16Le(message[0..len]) },
+        );
+
+        const free_result = win32.LocalFree(msg);
+        if (free_result != null) std.log.err(
+            "win32 LocalFree() after FormatMessageW() error code 0x{x}",
+            .{ @intFromPtr(free_result) },
+        );
+    } else {
+        return error.NoMessage;
+    }
+
+}
+
 const win32 = if (build_options.win32_linked) struct {
+    pub extern fn GetLastError() callconv(.winapi) DWORD;
+    pub extern fn FormatMessageW(
+        dwFlags: DWORD,
+        lpSource: LPCVOID,
+        dwMessageId: DWORD,
+        dwLanguageId: DWORD,
+        lpBuffer: LPWSTR,
+        nSize: DWORD,
+        Arguments: ?std.builtin.VaList,
+    ) callconv(.winapi) DWORD;
+
+    pub extern fn LocalFree(hMem: HLOCAL) callconv(.winapi) HLOCAL;
+
     pub extern fn RegisterClassExW(
         lpWndClass: *const WNDCLASSEXW,
     ) callconv(.winapi) ATOM;
@@ -359,41 +444,15 @@ const win32 = if (build_options.win32_linked) struct {
     ) callconv(.winapi) BOOL;
 } else @compileError("invalid reference to unlinked Win32 library");
 
-const Client = @This();
-const ScreenSize = root.ScreenSize;
-const ScreenPosition = root.ScreenPosition;
-const missing_backend_error =
-    if (build_options.win32_force_test_host) error.Win32ConnectionFailure
-    else error.SkipZigTest;
-
-const StringOrAtom = packed union {
-    string: LPCWSTR,
-    atom: packed struct {
-        word: WORD,
-        _high: @Type(.{ .int = .{
-            .signedness = .unsigned,
-            .bits = @bitSizeOf(LPCWSTR) - @bitSizeOf(WORD),
-        }}) = 0,
-    },
-
-    pub inline fn fromAtom(atom: ATOM) StringOrAtom {
-        return .{ .atom = .{ .word = atom }};
-    }
-};
-comptime { debug.assert(ATOM == WORD); }
-comptime { debug.assert(@bitSizeOf(WORD) == 16); }
-comptime { debug.assert(@bitSizeOf(StringOrAtom) == @bitSizeOf(LPCWSTR)); }
-test StringOrAtom {
-    const atom: ATOM = 0x63;
-    const as_macro: usize = @intFromPtr(MAKEINTATOM(atom));
-    const as_union: usize = @bitCast(StringOrAtom.fromAtom(atom));
-    try testing.expectEqual(as_macro, as_union);
-}
-
 // translate-c (as of 0.15.2) has trouble with `winbase.h`
 inline fn MAKEINTATOM(atom: ATOM) ?[*:0]const align(1) u16 {
     return @ptrFromInt(@as(u16, @intCast(atom)));
 }
+
+const log_unrecognized_errors: bool = switch (@import("builtin").mode) {
+    .Debug => true,
+    .ReleaseSafe, .ReleaseFast, .ReleaseSmall => false,
+};
 
 // Comes from `winbase.h`
 const STARTF_USESHOWWINDOW: c_int = 0x00000001;
@@ -418,6 +477,7 @@ const HINSTANCE             = h.HINSTANCE;
 const HWND                  = h.HWND;
 const HDC                   = h.HDC;
 const HMENU                 = h.HMENU;
+const HLOCAL                = h.HLOCAL;
 const HCURSOR               = h.HCURSOR;
 const WPARAM                = h.WPARAM;
 const LPARAM                = h.LPARAM;
@@ -429,20 +489,45 @@ const WNDCLASSEXW           = h.WNDCLASSEXW;
 const PAINTSTRUCT           = h.PAINTSTRUCT;
 
 const LPVOID                = h.LPVOID;
+const LPWSTR                = h.LPWSTR;
+const LPCVOID               = h.LPCVOID;
 const LPCWSTR               = h.LPCWSTR;
 const LPMSG                 = h.LPMSG;
 const LPSTARTUPINFOW        = h.LPSTARTUPINFOW;
 
+// Hardcoded because translate-c was not setting these macros to the correct values
+const ERROR_SUCCESS                 = 0x0;
+const ERROR_ACCESS_DENIED           = 0x5;
+const ERROR_INVALID_HANDLE          = 0x6;
+const ERROR_INVALID_PARAMETER       = 0x57;
+const ERROR_CLASS_ALREADY_EXISTS    = 0x582;
+const ERROR_CLASS_DOES_NOT_EXIST    = 0x583;
+const ERROR_CLASS_HAS_WINDOWS       = 0x584;
+
+// Comes from `winbase.h`
+const FORMAT_MESSAGE_ALLOCATE_BUFFER    = 0x00000100;
+const FORMAT_MESSAGE_FROM_SYSTEM        = 0x00001000;
+const FORMAT_MESSAGE_IGNORE_INSERTS     = 0x00000200;
+
+const Client = @This();
+const ScreenSize = root.ScreenSize;
+const ScreenPosition = root.ScreenPosition;
+const missing_backend_error =
+    if (build_options.win32_force_test_host) error.Win32ConnectionFailure
+    else error.SkipZigTest;
+
 const h = if (build_options.win32_linked) @import("win32")
     else @compileError("invalid reference to unlinked Win32 headers");
 
-const strL = std.unicode.utf8ToUtf16LeStringLiteral;
-const bufStrL = std.unicode.utf8ToUtf16Le;
+const VaList = std.builtin.VaList;
+const strL = unicode.utf8ToUtf16LeStringLiteral;
+const bufStrL = unicode.utf8ToUtf16Le;
 const kernel32 = std.os.windows.kernel32;
 
 const mem = std.mem;
 const debug = std.debug;
 const testing = std.testing;
+const unicode = std.unicode;
 
 const root = @import("../root.zig");
 const build_options = @import("build_options");
