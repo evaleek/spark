@@ -106,9 +106,25 @@ pub fn build(b: *std.Build) !void {
 
     const mod_tests = b.addTest(.{ .root_module = mod });
     const run_mod_tests = b.addRunArtifact(mod_tests);
-
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
+
+    const window_test_exe = b.addExecutable(.{
+        .name = b.fmt("{s}-test-{s}", .{
+            zon_name,
+            @tagName(target.result.os.tag),
+        }),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test_window.zig"),
+            .imports = &.{ .{ .name = zon_name, .module = mod } },
+            .target = target,
+            .optimize = .Debug,
+        }),
+    });
+    const run_window_test = b.addRunArtifact(window_test_exe);
+    const window_test_step = b.step("test-window", "Launch a test window");
+    window_test_step.dependOn(&run_mod_tests.step);
+    window_test_step.dependOn(&run_window_test.step);
 }
 
 const LinkMode = std.builtin.LinkMode;
