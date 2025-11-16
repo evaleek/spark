@@ -198,6 +198,16 @@ fn WndProcDefault(
     switch (uMsg) {
         else => return win32.DefWindowProcW(hWnd, uMsg, wParam, lParam),
 
+        WM_CLOSE => |repost| {
+            const result = win32.PostMessageW(hWnd, repost, 0, 0);
+            if (result != 0) {} else {
+                const err = win32.GetLastError();
+                // TODO probably best to ensure this always bubbles up to somewhere
+                if (log_unrecognized_errors) logSystemError(err) catch {};
+            }
+            return 0;
+        },
+
         WM_PAINT => {
             var ps = mem.zeroes(PAINTSTRUCT);
 
@@ -477,6 +487,13 @@ const win32 = if (build_options.win32_linked) struct {
         hWnd: HWND,
         nIndex: c_int,
     ) callconv(.winapi) LONG_PTR;
+
+    pub extern fn PostMessageW(
+        hWnd: HWND,
+        Msg: UINT,
+        wParam: WPARAM,
+        lParam: LPARAM,
+    ) callconv(.winapi) BOOL;
 
     pub extern fn PeekMessageW(
         lpMsg: LPMSG,
