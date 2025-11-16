@@ -167,12 +167,12 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
                     ) catch break :no_display error.HostDown,
                     posix.F_OK,
                 )) {
-                    break :no_display error.ConnectionFailed;
+                    break :no_display error.ConnectionFailure;
                 } else |err| switch (err) {
                     error.AccessDenied,
                     error.FileBusy,
                     error.InputOutput,
-                    error.PermissionDenied => break :no_display error.ConnectionFailed,
+                    error.PermissionDenied => break :no_display error.ConnectionFailure,
                     else => break :no_display error.HostDown,
                 }
             }
@@ -259,9 +259,11 @@ test "no context before set" {
     }
 }
 
+pub const DisconnectionError = root.DisconnectionError;
+
 /// Deinitialize the connection to the display server.
 /// Invalidates any resources created with this client.
-pub fn disconnect(client: *Client) void {
+pub fn disconnect(client: *Client) DisconnectionError!void {
     defer client.* = undefined;
 
     {
@@ -273,11 +275,11 @@ pub fn disconnect(client: *Client) void {
                 context,
             )) {
                 0 => {},
-                XCNOENT => log.err("missing X context to delete at deinit", .{}),
+                XCNOENT => return error.InvalidClient,
                 else => unreachable,
             }
         } else {
-            log.err("null X context key at deinit", .{});
+            return error.InvalidClient;
         }
     }
 
@@ -457,12 +459,12 @@ pub fn openWindow(client: *Client, options: Window.CreationOptions) Window.Creat
     return window;
 }
 
-pub fn closeWindow(client: *Client, window: *Window) void {
-    window.close(client);
+pub fn closeWindow(client: *Client, window: *Window) Window.DestructionError!void {
+    return window.close(client);
 }
 
-pub fn showWindow(client: *Client, window: Window) void {
-    window.show(client);
+pub fn showWindow(client: *Client, window: Window) Window.ShowError!void {
+    return window.show(client);
 }
 
 pub const Window = struct {
@@ -475,6 +477,8 @@ pub const Window = struct {
 
     pub const CreationOptions = root.WindowCreationOptions;
     pub const CreationError = root.WindowCreationError;
+    pub const DestructionError = root.WindowDestructionError;
+    pub const ShowError = root.WindowShowError;
 
     pub fn open(window: *Window, client: *Client, options: CreationOptions) CreationError!void {
         // The library assumes a single X11 screen
@@ -570,31 +574,23 @@ pub const Window = struct {
         }
     }
 
-    pub fn close(window: *Window, client: *Client) void {
+    pub fn close(window: *Window, client: *Client) DestructionError!void {
         _ = x11.XDestroyWindow(client.display, window.handle);
 
-        switch (@import("builtin").mode) {
-            .Debug, .ReleaseSafe => {
-                switch (client.checkError()) {
-                    Success => {},
-                    BadWindow => log.err(
-                        "an X11 window ({d}) was invalid at destruction",
-                        .{ window.handle },
-                    ),
-                    else => unreachable,
-                }
-            },
-            .ReleaseFast, .ReleaseSmall => {},
+        switch (client.checkError()) {
+            Success => {},
+            BadWindow => return error.InvalidWindow,
+            else => unreachable,
         }
 
         window.* = undefined;
     }
 
-    pub fn show(window: Window, client: *Client) void {
+    pub fn show(window: Window, client: *Client) ShowError!void {
         _ = x11.XMapWindow(client.display, window.handle);
         switch (client.checkError()) {
             Success => {},
-            BadWindow => unreachable, // TODO is reachable?
+            BadWindow => return error.InvalidWindow,
             else => unreachable,
         }
     }

@@ -93,6 +93,9 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
             else SW_SHOWDEFAULT;
     };
 
+    const cursor: @FieldType(WNDCLASSEXW, "hCursor") = win32.LoadCursorW(0, IDC_ARROW);
+    if (cursor == 0) unreachable;
+
     client.direct_window_class = win32.RegisterClassExW(&.{
         .cbSize = @sizeOf(WNDCLASSEXW),
         .lpfnWndProc = &WndProcDefault,
@@ -100,15 +103,16 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
         .lpszClassName = strL(direct_window_class_name),
         .style = 0, // TODO
         .hIcon = 0, // TODO
-        .hCursor = win32.LoadCursorW(0, IDC_ARROW),
+        .hCursor = cursor,
 
         .cbClsExtra = 0,
         .cbWndExtra = 0,
         .hbrBackground = 0, // TODO is this ever relevant?
     });
     if (client.direct_window_class == 0) {
-        return switch (inner_err: { break :inner_err switch (win32.GetLastError()) {
+        return switch (inner: { break :inner switch (win32.GetLastError()) {
             ERROR_SUCCESS => unreachable,
+            ERROR_NOT_ENOUGH_MEMORY => error.OutOfMemory,
             ERROR_CLASS_ALREADY_EXISTS => error.WindowClassAlreadyExists,
             ERROR_INVALID_PARAMETER => error.InvalidParameter,
             ERROR_ACCESS_DENIED => error.AccessDenied,
@@ -117,14 +121,15 @@ pub fn connect(client: *Client, options: ConnectOptions) ConnectionError!void {
             ERROR_INVALID_HANDLE => error.InvalidInstanceHandle,
             else => |err| unsupported: {
                 if (log_unrecognized_errors) logSystemError(err) catch {};
-                break :unsupported error.UnsupportedWindowsClassRegistrationError;
+                break :unsupported error.UnsupportedWindowsFailure;
             },
         };}) {
+            error.OutOfMemory => error.OutOfMemory,
             error.InvalidParameter => unreachable,
             error.InvalidInstanceHandle => error.InvalidOptions,
             error.WindowClassAlreadyExists => error.DuplicateClient,
-            error.AccessDenied => error.ConnectionFailed,
-            error.UnsupportedWindowsClassRegistrationError => error.ConnectionFailed,
+            error.AccessDenied => error.AccessDenied,
+            error.UnsupportedWindowsFailure => error.ConnectionFailure,
         };
     }
 }
@@ -146,10 +151,10 @@ test "double connect class already exists failure" {
     }
 }
 
-pub fn disconnect(client: *Client) void {
-    defer client.* = undefined;
+pub const DisconnectionError = root.DisconnectionError;
 
-    // TODO free windows stored in client
+pub fn disconnect(client: *Client) DisconnectionError!void {
+    defer client.* = undefined;
 
     {
         const result = win32.UnregisterClassW(
@@ -157,8 +162,14 @@ pub fn disconnect(client: *Client) void {
             null, // TODO is the hInstance needed here?
         );
         if (result == 0) {
-            // error: class could not be found
-            // or window still exists that was created with the class
+            switch (win32.GetLastError()) {
+                ERROR_SUCCESS => unreachable,
+                ERROR_CLASS_HAS_WINDOWS => return error.StillActiveWindows,
+                ERROR_INVALID_NAME => return error.InvalidClient,
+                else => |err| {
+                    if (log_unrecognized_errors) logSystemError(err) catch {};
+                },
+            }
         }
     }
 }
@@ -215,12 +226,12 @@ pub fn openWindow(client: *Client, options: Window.CreationOptions) Window.Creat
     return window;
 }
 
-pub fn closeWindow(client: *Client, window: *Window) void {
-    window.close(client);
+pub fn closeWindow(client: *Client, window: *Window) Window.DestructionError!void {
+    return window.close(client);
 }
 
-pub fn showWindow(client: *Client, window: Window) void {
-    window.show(client);
+pub fn showWindow(client: *Client, window: Window) Window.ShowError!void {
+    return window.show(client);
 }
 
 pub const Window = struct {
@@ -233,6 +244,8 @@ pub const Window = struct {
 
     pub const CreationOptions = root.WindowCreationOptions;
     pub const CreationError = root.WindowCreationError;
+    pub const DestructionError = root.WindowDestructionError;
+    pub const ShowError = root.WindowShowError;
 
     pub fn open(window: *Window, client: *Client, options: CreationOptions) CreationError!void {
         // TODO determine good max name length
@@ -263,7 +276,30 @@ pub const Window = struct {
             null,
         );
         if (window.handle == 0) {
-            // TODO error
+            return switch (inner: { break :inner switch (win32.GetLastError()) {
+                ERROR_SUCCESS => unreachable,
+                ERROR_NO_SYSTEM_RESOURCES => error.OutOfResources,
+                ERROR_OUT_OF_STRUCTURES => error.OutOfResources,
+                ERROR_NOT_ENOUGH_MEMORY => error.OutOfMemory,
+                ERROR_INVALID_NAME => error.InternalNameInvalid,
+                ERROR_INVALID_WINDOW_STYLE => error.WindowStyleInvalid,
+                ERROR_INVALID_PARAMETER => error.InvalidParameter,
+                ERROR_INVALID_HANDLE => error.InvalidHandle,
+                ERROR_ACCESS_DENIED => error.AccessDenied,
+                else => |err| unsupported: {
+                    if (log_unrecognized_errors) logSystemError(err) catch {};
+                    break :unsupported error.UnsupportedWindowsFailure;
+                },
+            };}) {
+                error.OutOfResources,
+                error.OutOfMemory => error.OutOfMemory,
+                error.AccessDenied => error.AccessDenied,
+                error.InvalidHandle,
+                error.InternalNameInvalid => error.InvalidClient,
+                error.UnsupportedWindowsFailure => error.WindowCreationFailure,
+                error.InvalidParameter,
+                error.WindowStyleInvalid => unreachable,
+            };
         }
         errdefer _ = win32.DestroyWindow(window.handle);
 
@@ -275,16 +311,31 @@ pub const Window = struct {
         // TODO query what the window size and origin is now and assign
     }
 
-    pub fn close(window: *Window, client: *Client) void {
+    pub fn close(window: *Window, client: *Client) DestructionError!void {
         _ = client;
         if (win32.DestroyWindow(window.handle) != 0) {} else {
-            // TODO error
+            return switch (inner: { break :inner switch (win32.GetLastError()) {
+                ERROR_SUCCESS => unreachable,
+                ERROR_INVALID_WINDOW_HANDLE => error.InvalidWindowHandle,
+                ERROR_ACCESS_DENIED => error.AccessDenied,
+                ERROR_NOT_ENOUGH_QUOTA => error.NotEnoughQuota,
+                else => |err| unsupported: {
+                    if (log_unrecognized_errors) logSystemError(err) catch {};
+                    break :unsupported error.UnsupportedWindowsFailure;
+                },
+            };}) {
+                error.InvalidWindowHandle => error.InvalidWindow,
+                error.AccessDenied => error.AccessDenied,
+                error.NotEnoughQuota => error.OutOfMemory,
+                error.UnsupportedWindowsFailure => error.WindowDestructionFailure,
+            };
         }
         window.* = undefined;
     }
 
-    pub fn show(window: Window, client: *Client) void {
-        const cmd: c_int = get_cmd: {
+    pub fn show(window: Window, client: *Client) ShowError!void {
+        // this is only for initial show() TODO
+        const init_cmd: c_int = get_cmd: {
             if (client.use_main_show_hint) {
                 client.use_main_show_hint = false;
                 break :get_cmd client.nCmdShow;
@@ -293,14 +344,10 @@ pub const Window = struct {
             }
         };
 
-        if (win32.ShowWindow(window.handle, cmd) != 0) {} else {
-            // TODO error
+        switch (win32.ShowWindow(window.handle, init_cmd)) {
+            0 => {}, // was previously hidden
+            else => return error.AlreadyVisible, // was previously visible
         }
-
-        // TODO where does this go
-        //if (win32.UpdateWindow(window.handle) != 0) {} else {
-        //    // TODO error
-        //}
     }
 };
 
@@ -343,21 +390,24 @@ fn logSystemError(err: DWORD) !void {
         null,
     );
 
-    if (len == 0) return error.NoMessage;
-    if (msg) |message| {
+    if (len == 0 or msg == null) {
         std.log.err(
-            "unsupported win32 system error code 0x{x} (error message follows)\n{f}",
-            .{ err, unicode.fmtUtf16Le(message[0..len]) },
+            "unsupported win32 system error code 0x{x} (no message)",
+            .{ err },
         );
-
-        const free_result = win32.LocalFree(msg);
-        if (free_result != null) std.log.err(
-            "win32 LocalFree() after FormatMessageW() error code 0x{x}",
-            .{ @intFromPtr(free_result) },
-        );
-    } else {
         return error.NoMessage;
     }
+
+    std.log.err(
+        "unsupported win32 system error code 0x{x} (error message follows)\n{f}",
+        .{ err, unicode.fmtUtf16Le(msg[0..len]) },
+    );
+
+    const free_result = win32.LocalFree(msg);
+    if (free_result != null) std.log.err(
+        "win32 LocalFree() after FormatMessageW() error code 0x{x}",
+        .{ @intFromPtr(free_result) },
+    );
 
 }
 
@@ -469,6 +519,11 @@ inline fn MAKEINTATOM(atom: ATOM) ?[*:0]const align(1) u16 {
     return @ptrFromInt(@as(u16, @intCast(atom)));
 }
 
+const safety: bool = switch (@import("builtin").mode) {
+    .Debug, .ReleaseSafe => true,
+    .ReleaseFast, .ReleaseSmall => false,
+};
+
 const log_unrecognized_errors: bool = switch (@import("builtin").mode) {
     .Debug => true,
     .ReleaseSafe, .ReleaseFast, .ReleaseSmall => false,
@@ -519,10 +574,17 @@ const LPSTARTUPINFOW        = h.LPSTARTUPINFOW;
 const ERROR_SUCCESS                 = 0x0;
 const ERROR_ACCESS_DENIED           = 0x5;
 const ERROR_INVALID_HANDLE          = 0x6;
+const ERROR_NOT_ENOUGH_MEMORY       = 0x8;
+const ERROR_OUT_OF_STRUCTURES       = 0x54;
 const ERROR_INVALID_PARAMETER       = 0x57;
+const ERROR_INVALID_NAME            = 0x7B;
+const ERROR_INVALID_WINDOW_HANDLE   = 0x578;
 const ERROR_CLASS_ALREADY_EXISTS    = 0x582;
 const ERROR_CLASS_DOES_NOT_EXIST    = 0x583;
 const ERROR_CLASS_HAS_WINDOWS       = 0x584;
+const ERROR_NO_SYSTEM_RESOURCES     = 0x5AA;
+const ERROR_NOT_ENOUGH_QUOTA        = 0x718;
+const ERROR_INVALID_WINDOW_STYLE    = 0x7D2;
 
 // Comes from `winbase.h`
 const FORMAT_MESSAGE_ALLOCATE_BUFFER    = 0x00000100;
@@ -544,6 +606,7 @@ const strL = unicode.utf8ToUtf16LeStringLiteral;
 const bufStrL = unicode.utf8ToUtf16Le;
 const kernel32 = std.os.windows.kernel32;
 
+const log = std.log;
 const mem = std.mem;
 const debug = std.debug;
 const testing = std.testing;

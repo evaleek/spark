@@ -18,12 +18,19 @@ pub const ScreenPosition = i32;
 
 pub const ConnectionError = error{
     OutOfMemory,
+    AccessDenied,
     /// One or more of the `ConnectOptions` was invalid
     InvalidOptions,
-    /// A client has already been registered
+    /// A client has already been initialized
     DuplicateClient,
     HostDown,
-    ConnectionFailed,
+    ConnectionFailure,
+};
+
+pub const DisconnectionError = error{
+    InvalidClient,
+    /// On platforms where all windows must be closed before deinitialization
+    StillActiveWindows,
 };
 
 pub const WindowCreationOptions = struct {
@@ -40,12 +47,27 @@ pub const WindowCreationOptions = struct {
 
 pub const WindowCreationError = error{
     OutOfMemory,
+    AccessDenied,
+    InvalidClient,
     /// The name exceeded the maximum length or was not valid UTF-8.
     InvalidName,
     /// The display selection was invalid,
     /// or may have been invalidated since display enumeration.
     /// Retrying with a `null` display selection will never return this error.
     InvalidDisplaySelection,
+    WindowCreationFailure,
+};
+
+pub const WindowDestructionError = error{
+    OutOfMemory,
+    AccessDenied,
+    InvalidWindow,
+    WindowDestructionFailure,
+};
+
+pub const WindowShowError = error{
+    AlreadyVisible,
+    InvalidWindow,
 };
 
 pub const DisplayInfo = struct {
@@ -175,12 +197,12 @@ fn openCloseWindow(comptime Client: type) !void {
         error.HostDown => return error.SkipZigTest,
         else => return err,
     };
-    defer client.disconnect();
 
     var window = try client.openWindow(.{ .name = "Spark test window" });
-    defer client.closeWindow(&window);
+    try client.showWindow(window);
+    try client.closeWindow(&window);
 
-    client.showWindow(window);
+    try client.disconnect();
 }
 
 fn passesUnitTests(qualifiers: []const []const u8) bool {
