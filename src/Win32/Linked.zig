@@ -143,9 +143,10 @@ test "double connect class already exists failure" {
             error.HostDown => return error.SkipZigTest,
             else => return err,
         };
-        defer client_a.disconnect();
 
         try testing.expectError(error.DuplicateClient, client_b.connect(.{}));
+
+        try client_a.disconnect();
     } else {
         return error.SkipZigTest;
     }
