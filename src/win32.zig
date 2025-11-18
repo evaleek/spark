@@ -24,6 +24,7 @@ pub const Message = union {
     /// It is more efficient to perform any move or size change processing
     /// during this message without calling `DefWindowProc`.
     pub const WindowPositionChanged = struct {
+        window: HWND,
         /// The new position of the left edge of the window.
         x: c_int,
         /// The new position of the top edge of the window.
