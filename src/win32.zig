@@ -1337,33 +1337,13 @@ pub const WINDOWPOS = extern struct {
     flags: UINT,
 };
 
-pub const SWP = struct {
-    // Draws a frame (defined in the window's class description) around the window.
-    // Same as the `SWP_FRAMECHANGED` flag.
-    pub const DRAWFRAME = 0x0020;
-    /// Sends a `WM_NCCALCSIZE` message to the window,
-    /// even if the window's size is not being changed.
-    /// If this flag is not specified,
-    /// `WM_NCCALCSIZE` is sent only when the window's size is being changed.
-    pub const FRAMECHANGED = 0x0020;
-    /// Hides the window.
-    pub const HIDEWINDOW = 0x0080;
-    // Does not activate the window.
-    // If this flag is not set,
-    // the window is activated and moved to the top of
-    // either the topmost or non-topmost group
-    // (depending on the setting of the `hwndInsertAfter` member).
-    pub const NOACTIVATE = 0x0010;
-    /// Discards the entire contents of the client area.
-    /// If this flag is not specified,
-    /// the valid contents of the client area are saved
-    /// and copied back into the client area
-    /// after the window is sized or repositioned.
-    pub const NOCOPYBITS = 0x0100;
-    /// Retains the current position (ignores the x and y members).
-    pub const NOMOVE = 0x0002;
-    /// Does not change the owner window's position in the Z order.
-    pub const NOOWNERZORDER = 0x0200;
+pub const SetWindowPosition = packed struct (UINT) {
+    /// Retains the current size (ignores the `cx` and `cy` members).
+    no_size: bool = false,
+    /// Retains the current position (ignores the `x` and `y` members).
+    no_move: bool = false,
+    /// Retains the current Z order (ignores the `hwndInsertAfter` member).
+    no_z_order: bool = false,
     /// Does not redraw changes.
     /// If this flag is set, no repainting of any kind occurs.
     /// This applies to the client area,
@@ -1373,17 +1353,121 @@ pub const SWP = struct {
     /// When this flag is set,
     /// the application must explicitly invalidate or redraw
     /// any parts of the window and parent window that need redrawing.
-    pub const NOREDRAW = 0x0008;
-    /// Does not change the owner window's position in the Z order.
-    /// Same as the `SWP_NOOWNERZORDER` flag.
-    pub const NOREPOSITION = 0x0200;
-    /// Prevents the window from receiving the `WM_WINDOWPOSCHANGING` message.
-    pub const NOSENDCHANGING = 0x0400;
-    /// Retains the current size (ignores the `cx` and `cy` members).
-    pub const NOSIZE = 0x0001;
-    /// Retains the current Z order (ignores the `hwndInsertAfter` member).
-    pub const NOZORDER = 0x0004;
+    no_redraw: bool = false,
+    /// Does not activate the window.
+    /// If this flag is not set,
+    /// the window is activated and moved to the top of
+    /// either the topmost or non-topmost group
+    /// (depending on the setting of the `hwndInsertAfter` member).
+    no_activate: bool = false,
+    /// Draws a frame (defined in the window's class description) around the window,
+    /// and sends a `WM_NCCALCSIZE` message to the the window,
+    /// even if the window's size is not being changed.
+    /// If this flag is not specified,
+    /// `WM_NCCALCSIZE` is sent only when the window's size is being changed.
+    draw_frame: bool = false,
     /// Displays the window.
+    show_window: bool = false,
+    /// Hides the window.
+    hide_window: bool = false,
+    /// Discards the entire contents of the client area.
+    /// If this flag is not specified,
+    /// the valid contents of the client area are saved
+    /// and copied back into the client area
+    /// after the window is sized or repositioned.
+    no_copy_bits: bool = false,
+    /// Does not change the owner window's position in the Z order.
+    no_owner_z_order: bool = false,
+    /// Prevents the window from receiving the `WM_WINDOWPOSCHANGING` message.
+    no_send_changing: bool = false,
+    _padding: @Type(.{ .int = .{
+        .signedness = .unsigned,
+        .bits = @bitSizeOf(UINT) - 11,
+    }}) = 0,
+};
+
+test SetWindowPosition {
+    try testing.expectEqual(0b0000000000000001, SWP.NOSIZE);
+    try testing.expectEqual(0b0000000000000010, SWP.NOMOVE);
+    try testing.expectEqual(0b0000000000000100, SWP.NOZORDER);
+    try testing.expectEqual(0b0000000000001000, SWP.NOREDRAW);
+    try testing.expectEqual(0b0000000000010000, SWP.NOACTIVATE);
+    try testing.expectEqual(0b0000000000100000, SWP.DRAWFRAME);
+    try testing.expectEqual(0b0000000000100000, SWP.FRAMECHANGED);
+    try testing.expectEqual(0b0000000001000000, SWP.SHOWWINDOW);
+    try testing.expectEqual(0b0000000010000000, SWP.HIDEWINDOW);
+    try testing.expectEqual(0b0000000100000000, SWP.NOCOPYBITS);
+    try testing.expectEqual(0b0000001000000000, SWP.NOOWNERZORDER);
+    try testing.expectEqual(0b0000001000000000, SWP.NOREPOSITION);
+    try testing.expectEqual(0b0000010000000000, SWP.NOSENDCHANGING);
+
+    try testing.expectEqual(
+        @as(UINT, SWP.NOSIZE),
+        @as(UINT, @bitCast(SetWindowPosition{ .no_size = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.NOMOVE),
+        @as(UINT, @bitCast(SetWindowPosition{ .no_move = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.NOZORDER),
+        @as(UINT, @bitCast(SetWindowPosition{ .no_z_order = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.NOREDRAW),
+        @as(UINT, @bitCast(SetWindowPosition{ .no_redraw = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.NOACTIVATE),
+        @as(UINT, @bitCast(SetWindowPosition{ .no_activate = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.DRAWFRAME),
+        @as(UINT, @bitCast(SetWindowPosition{ .draw_frame = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.FRAMECHANGED),
+        @as(UINT, @bitCast(SetWindowPosition{ .draw_frame = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.SHOWWINDOW),
+        @as(UINT, @bitCast(SetWindowPosition{ .show_window = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.HIDEWINDOW),
+        @as(UINT, @bitCast(SetWindowPosition{ .hide_window = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.NOCOPYBITS),
+        @as(UINT, @bitCast(SetWindowPosition{ .no_copy_bits = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.NOOWNERZORDER),
+        @as(UINT, @bitCast(SetWindowPosition{ .no_owner_z_order = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.NOREPOSITION),
+        @as(UINT, @bitCast(SetWindowPosition{ .no_owner_z_order = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.NOSENDCHANGING),
+        @as(UINT, @bitCast(SetWindowPosition{ .no_send_changing = true })),
+    );
+}
+
+pub const SWP = struct {
+    pub const DRAWFRAME = 0x0020;
+    pub const FRAMECHANGED = 0x0020;
+    pub const HIDEWINDOW = 0x0080;
+    pub const NOACTIVATE = 0x0010;
+    pub const NOCOPYBITS = 0x0100;
+    pub const NOMOVE = 0x0002;
+    pub const NOOWNERZORDER = 0x0200;
+    pub const NOREDRAW = 0x0008;
+    pub const NOREPOSITION = 0x0200;
+    pub const NOSENDCHANGING = 0x0400;
+    pub const NOSIZE = 0x0001;
+    pub const NOZORDER = 0x0004;
     pub const SHOWWINDOW = 0x0040;
 };
 
