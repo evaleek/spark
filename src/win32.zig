@@ -1,42 +1,55 @@
-pub const UINT = windows.UINT;
-pub const DWORD = windows.DWORD;
-pub const WPARAM = windows.WPARAM;
-pub const LPARAM = windows.LPARAM;
-pub const HWND = windows.HWND;
+fn HalfWord(comptime signedness: std.builtin.Signedness, comptime T: type) type {
+    return @Type(.{ .int = .{
+        .signedness = signedness,
+        .bits = @divExact(@bitSizeOf(T), 2),
+    }});
+}
 
-pub const POINT = windows.POINT;
+pub const Message = union {
 
-pub const MSG = extern struct {
-    /// A handle to the window whose window procedure receives the message.
-    /// This member is `null` when the message is a thread message.
-    hwnd: ?HWND,
-    /// The message identifier.
-    /// Applications can only use the low word;
-    /// the high word is reserved by the system.
-    message: UINT,
-    /// Additional information about the message.
-    /// The exact meaning depends on the value of `.message`.
-    wParam: WPARAM,
-    /// Additional information about the message.
-    /// The exact meaning depends on the value of `.message`.
-    lParam: LPARAM,
-    /// The time at which the message was posted
-    /// (number of milliseconds since the system was started).
-    time: DWORD,
-    /// The cursor position, in screen coordinates,
-    /// when the message was posted.
-    pt: POINT,
-    lPrivate: DWORD,
+    pub const Size = struct {
+        request: Request,
+        width: Scalar,
+        height: Scalar,
 
-    pub fn identify(msg: MSG) WindowsMessage {
-        // Windows intends for us to ignore the high word,
-        // although it should be zero
-        // (because it is also valid to compare directly to the `WM_*` macros)
-        return @enumFromInt(@as(
-            @typeInfo(WindowsMessage).@"enum".tag_type,
-            @truncate(msg.message),
-        ));
-    }
+        pub const Scalar = HalfWord(.unsigned, LPARAM);
+
+        pub const Request = enum (WPARAM) {
+            /// Message is sent to all pop-up windows
+            /// when some other window is maximized.
+            max_hide = SIZE.MAXHIDE,
+            /// The window has been maximized.
+            maximized = SIZE.MAXIMIZED,
+            /// Message is sent to all pop-up windows
+            /// when some other window has been restored to its former size.
+            max_show = SIZE.MAXSHOW,
+            /// The window has been minimized.
+            minimized = SIZE.MINIMIZED,
+            /// The window has been resized,
+            /// but neither the `minimized` nor `maximized` value applies.
+            restored = SIZE.RESTORED,
+            _,
+
+            pub fn fromParam(wParam: WPARAM) Request {
+                return @enumFromInt(wParam);
+            }
+        };
+
+        pub fn fromParams(
+            uMsg: UINT,
+            wParam: WPARAM,
+            lParam: LPARAM,
+        ) Size {
+            assert(uMsg == WM.SIZE);
+            const WidthHeight = packed struct (LPARAM) { low: Scalar, high: Scalar };
+            const width_height: WidthHeight = @bitCast(lParam);
+            return Size{
+                .request = .fromParam(wParam),
+                .width = width_height.low,
+                .height = width_height.high,
+            };
+        }
+    };
 };
 
 pub const WindowsMessage = enum(u16) {
@@ -1046,6 +1059,39 @@ pub const WindowsMessage = enum(u16) {
     _,
 };
 
+pub const MSG = extern struct {
+    /// A handle to the window whose window procedure receives the message.
+    /// This member is `null` when the message is a thread message.
+    hwnd: ?HWND,
+    /// The message identifier.
+    /// Applications can only use the low word;
+    /// the high word is reserved by the system.
+    message: UINT,
+    /// Additional information about the message.
+    /// The exact meaning depends on the value of `.message`.
+    wParam: WPARAM,
+    /// Additional information about the message.
+    /// The exact meaning depends on the value of `.message`.
+    lParam: LPARAM,
+    /// The time at which the message was posted
+    /// (number of milliseconds since the system was started).
+    time: DWORD,
+    /// The cursor position, in screen coordinates,
+    /// when the message was posted.
+    pt: POINT,
+    lPrivate: DWORD,
+
+    pub fn identify(msg: MSG) WindowsMessage {
+        // Windows intends for us to ignore the high word,
+        // although it should be zero
+        // (because it is also valid to compare directly to the `WM_*` macros)
+        return @enumFromInt(@as(
+            @typeInfo(WindowsMessage).@"enum".tag_type,
+            @truncate(msg.message),
+        ));
+    }
+};
+
 /// Windows message values appearing in the low word of the `MSG.message` identifier
 pub const WM = struct {
     pub const ACTIVATE = 0x6;
@@ -1265,6 +1311,23 @@ pub const WM = struct {
     pub const XBUTTONDOWN = 0x020B;
     pub const XBUTTONUP = 0x020C;
 };
+
+pub const SIZE = struct {
+    pub const MAXHIDE = 4;
+    pub const MAXIMIZED = 2;
+    pub const MAXSHOW = 3;
+    pub const MINIMIZED = 1;
+    pub const RESTORED = 0;
+};
+
+pub const UINT = windows.UINT;
+pub const DWORD = windows.DWORD;
+pub const WPARAM = windows.WPARAM;
+pub const LPARAM = windows.LPARAM;
+pub const HWND = windows.HWND;
+pub const POINT = windows.POINT;
+
+const assert = std.debug.assert;
 
 const testing = std.testing;
 
