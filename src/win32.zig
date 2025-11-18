@@ -1317,6 +1317,76 @@ pub const WM = struct {
     pub const XBUTTONUP = 0x020C;
 };
 
+pub const WINDOWPOS = extern struct {
+    /// A handle to the window.
+    hwnd: HWND,
+    /// The position of the window in Z order (front-to-back position).
+    /// This member can be
+    /// a handle to the window behind which this window is placed, or can be
+    /// one of the special values listed with the `SetWindowPos` function.
+    hwndInsertAfter: HWND,
+    /// The position of the left edge of the window.
+    x: c_int,
+    /// The position of the top edge of the window.
+    y: c_int,
+    /// The window width, in pixels.
+    cx: c_int,
+    /// The window height, in pixels.
+    cy: c_int,
+    /// The window position.
+    flags: UINT,
+};
+
+pub const SWP = struct {
+    // Draws a frame (defined in the window's class description) around the window.
+    // Same as the `SWP_FRAMECHANGED` flag.
+    pub const DRAWFRAME = 0x0020;
+    /// Sends a `WM_NCCALCSIZE` message to the window,
+    /// even if the window's size is not being changed.
+    /// If this flag is not specified,
+    /// `WM_NCCALCSIZE` is sent only when the window's size is being changed.
+    pub const FRAMECHANGED = 0x0020;
+    /// Hides the window.
+    pub const HIDEWINDOW = 0x0080;
+    // Does not activate the window.
+    // If this flag is not set,
+    // the window is activated and moved to the top of
+    // either the topmost or non-topmost group
+    // (depending on the setting of the `hwndInsertAfter` member).
+    pub const NOACTIVATE = 0x0010;
+    /// Discards the entire contents of the client area.
+    /// If this flag is not specified,
+    /// the valid contents of the client area are saved
+    /// and copied back into the client area
+    /// after the window is sized or repositioned.
+    pub const NOCOPYBITS = 0x0100;
+    /// Retains the current position (ignores the x and y members).
+    pub const NOMOVE = 0x0002;
+    /// Does not change the owner window's position in the Z order.
+    pub const NOOWNERZORDER = 0x0200;
+    /// Does not redraw changes.
+    /// If this flag is set, no repainting of any kind occurs.
+    /// This applies to the client area,
+    /// the nonclient area (including the title bar and scroll bars),
+    /// and any part of the parent window uncovered
+    /// as a result of the window being moved.
+    /// When this flag is set,
+    /// the application must explicitly invalidate or redraw
+    /// any parts of the window and parent window that need redrawing.
+    pub const NOREDRAW = 0x0008;
+    /// Does not change the owner window's position in the Z order.
+    /// Same as the `SWP_NOOWNERZORDER` flag.
+    pub const NOREPOSITION = 0x0200;
+    /// Prevents the window from receiving the `WM_WINDOWPOSCHANGING` message.
+    pub const NOSENDCHANGING = 0x0400;
+    /// Retains the current size (ignores the `cx` and `cy` members).
+    pub const NOSIZE = 0x0001;
+    /// Retains the current Z order (ignores the `hwndInsertAfter` member).
+    pub const NOZORDER = 0x0004;
+    /// Displays the window.
+    pub const SHOWWINDOW = 0x0040;
+};
+
 pub const SIZE = struct {
     pub const MAXHIDE = 4;
     pub const MAXIMIZED = 2;
