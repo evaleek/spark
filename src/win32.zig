@@ -12,13 +12,102 @@ pub const LWords = packed struct (LPARAM) {
 
 pub const Message = union {
 
+    /// Sent to a window whose size, position, or place in the Z-order
+    /// has changed as a result of a call to the `SetWindowPos` function
+    /// or another window management function.
+    ///
+    /// Calling `DefWindowProc` on this message
+    /// sends the `Size` and `Move` messages to the window,
+    /// and they are not sent if an application handles this message
+    /// without calling `DefWindowProc`.
+    ///
+    /// It is more efficient to perform any move or size change processing
+    /// during this message without calling `DefWindowProc`.
+    pub const WindowPositionChanged = struct {
+        /// The new position of the left edge of the window.
+        x: c_int,
+        /// The new position of the top edge of the window.
+        y: c_int,
+        /// The new window width, in pixels.
+        width: c_int,
+        /// The new window height, in pixels.
+        height: c_int,
+        /// The position of the window in Z order (front-to-back position).
+        /// This member can be a handle to
+        /// the window behind which this window is placed,
+        /// or can be a special value.
+        z: Z,
+        flags: SetWindowPosition,
+
+        pub const message = WM.WINDOWPOSCHANGED;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub const Z = union(enum) {
+            /// A special bottom/top value
+            order: WindowInsertAfter,
+            /// The handle of the window behind which this window is stacked
+            after: HWND,
+        };
+
+        /// The parameters used to parse this message
+        /// are a reference to Windows-owned data
+        /// received within the `WindowProc` function.
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) WindowPositionChanged {
+            assert(uMsg == message);
+            _ = wParam;
+            const l: *const WINDOWPOS = @ptrFromInt(lParam);
+            return WindowPositionChanged{
+                .x = l.x,
+                .y = l.y,
+                .width = l.cx,
+                .height = l.cy,
+                .z = switch (l.hwndInsertAfter) {
+                    HWNDZ.BOTTOM,
+                    HWNDZ.NOTOPMOST,
+                    HWNDZ.TOP,
+                    HWNDZ.TOPMOST => @enumFromInt(l.hwndInsertAfter),
+                    else => l.hwndInsertAfter,
+                },
+                .flags = @bitCast(l.flags),
+            };
+        }
+    };
+
+    /// Sent after a window has been moved.
+    pub const Move = struct {
+        /// The x-coordinate of the upper left corner of the client area of the window.
+        x: i16,
+        /// The y-coordinate of the upper left corner of the client area of the window.
+        y: i16,
+
+        pub const message = WM.MOVE;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Move {
+            assert(uMsg == message);
+            const l: LWords = @bitCast(lParam);
+            _ = wParam;
+            return Move{
+                .x = @bitCast(l.low),
+                .y = @bitCast(l.high),
+            };
+        }
+    };
+
+    /// Sent to a window after its size has changed.
     pub const Size = struct {
+        /// The type of resizing requested.
         request: Request,
+        /// The new width of the client area.
         width: u16,
+        /// The new height of the client area.
         height: u16,
 
+        pub const message = WM.SIZE;
         /// If an application processes this message, it should return this value.
-        pub const Result: LRESULT = 0;
+        pub const processed: LRESULT = 0;
 
         pub const Request = enum (WPARAM) {
             /// Message is sent to all pop-up windows
@@ -41,12 +130,8 @@ pub const Message = union {
             }
         };
 
-        pub fn fromParams(
-            uMsg: UINT,
-            wParam: WPARAM,
-            lParam: LPARAM,
-        ) Size {
-            assert(uMsg == WM.SIZE);
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Size {
+            assert(uMsg == message);
             const l: LWords = @bitCast(lParam);
             return Size{
                 .request = .fromParam(wParam),
@@ -1108,9 +1193,18 @@ pub const SetWindowPosition = packed struct (UINT) {
     no_owner_z_order: bool = false,
     /// Prevents the window from receiving the `WM_WINDOWPOSCHANGING` message.
     no_send_changing: bool = false,
+    _unused: u2 = 0,
+    /// Prevents generation of the `WM_SYNCPAINT` message.
+    defer_erase: bool = false,
+    /// If the calling thread and the thread that owns the window
+    /// are attached to different input queues,
+    /// the system posts the request to the thread that owns the window.
+    /// This prevents the calling thread from blocking its execution
+    /// while other threads process the request.
+    async_window_position: bool = false,
     _padding: @Type(.{ .int = .{
         .signedness = .unsigned,
-        .bits = @bitSizeOf(UINT) - 11,
+        .bits = @bitSizeOf(UINT) - 15,
     }}) = 0,
 };
 
@@ -1128,6 +1222,8 @@ test SetWindowPosition {
     try testing.expectEqual(0b0000001000000000, SWP.NOOWNERZORDER);
     try testing.expectEqual(0b0000001000000000, SWP.NOREPOSITION);
     try testing.expectEqual(0b0000010000000000, SWP.NOSENDCHANGING);
+    try testing.expectEqual(0b0010000000000000, SWP.DEFERERASE);
+    try testing.expectEqual(0b0100000000000000, SWP.ASYNCWINDOWPOS);
 
     try testing.expectEqual(
         @as(UINT, SWP.NOSIZE),
@@ -1180,6 +1276,14 @@ test SetWindowPosition {
     try testing.expectEqual(
         @as(UINT, SWP.NOSENDCHANGING),
         @as(UINT, @bitCast(SetWindowPosition{ .no_send_changing = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.DEFERERASE),
+        @as(UINT, @bitCast(SetWindowPosition{ .defer_erase = true })),
+    );
+    try testing.expectEqual(
+        @as(UINT, SWP.ASYNCWINDOWPOS),
+        @as(UINT, @bitCast(SetWindowPosition{ .async_window_position = true })),
     );
 }
 
@@ -1485,6 +1589,8 @@ pub const HWNDZ = struct {
 };
 
 pub const SWP = struct {
+    pub const ASYNCWINDOWPOS = 0x4000;
+    pub const DEFERERASE = 0x2000;
     pub const DRAWFRAME = 0x0020;
     pub const FRAMECHANGED = 0x0020;
     pub const HIDEWINDOW = 0x0080;
