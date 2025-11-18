@@ -1,18 +1,24 @@
-fn HalfWord(comptime signedness: std.builtin.Signedness, comptime T: type) type {
-    return @Type(.{ .int = .{
-        .signedness = signedness,
-        .bits = @divExact(@bitSizeOf(T), 2),
-    }});
-}
+pub const LWords = packed struct (LPARAM) {
+    /// LOWORD(LPARAM) equivalent
+    low: WORD,
+    /// HIWORD(LPARAM) equivalent
+    high: WORD,
+    /// Unused on 64-bit systems
+    _padding: @Type(.{ .int = .{
+        .signedness = .unsigned,
+        .bits = @bitSizeOf(LPARAM) - ( 2 * @bitSizeOf(WORD) ),
+    }}),
+};
 
 pub const Message = union {
 
     pub const Size = struct {
         request: Request,
-        width: Scalar,
-        height: Scalar,
+        width: u16,
+        height: u16,
 
-        pub const Scalar = HalfWord(.unsigned, LPARAM);
+        /// If an application processes this message, it should return this value.
+        pub const Result: LRESULT = 0;
 
         pub const Request = enum (WPARAM) {
             /// Message is sent to all pop-up windows
@@ -41,12 +47,11 @@ pub const Message = union {
             lParam: LPARAM,
         ) Size {
             assert(uMsg == WM.SIZE);
-            const WidthHeight = packed struct (LPARAM) { low: Scalar, high: Scalar };
-            const width_height: WidthHeight = @bitCast(lParam);
+            const l: LWords = @bitCast(lParam);
             return Size{
                 .request = .fromParam(wParam),
-                .width = width_height.low,
-                .height = width_height.high,
+                .width = l.low,
+                .height = l.high,
             };
         }
     };
@@ -1321,9 +1326,11 @@ pub const SIZE = struct {
 };
 
 pub const UINT = windows.UINT;
+pub const WORD = windows.WORD;
 pub const DWORD = windows.DWORD;
 pub const WPARAM = windows.WPARAM;
 pub const LPARAM = windows.LPARAM;
+pub const LRESULT = windows.LRESULT;
 pub const HWND = windows.HWND;
 pub const POINT = windows.POINT;
 
