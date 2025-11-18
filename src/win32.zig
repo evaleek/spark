@@ -29,7 +29,7 @@ pub const MSG = extern struct {
     lPrivate: DWORD,
 
     pub fn identify(msg: MSG) WindowsMessage {
-        // Windows intends for us to ignore the low word,
+        // Windows intends for us to ignore the high word,
         // although it should be zero
         // (because it is also valid to compare directly to the `WM_*` macros)
         return @enumFromInt(@as(
