@@ -1479,6 +1479,117 @@ pub const WindowsMessage = enum(u16) {
     _,
 };
 
+pub const WindowClassStyle = packed struct (UINT) {
+    /// Redraws the entire window
+    /// if a movement or size adjustment changes the height of the client area.
+    vertical_redraw: bool = false,
+    /// Redraws the entire window
+    /// if a movement or size adjustment changes the width of the client area.
+    horizontal_redraw: bool = false,
+    _unused_0: u1 = 0,
+    /// Sends a double-click message to the window procedure
+    /// when the user double-clicks the mouse
+    /// while the cursor is within a window belonging to the class.
+    double_clicks: bool = false,
+    _unused_1: u1 = 0,
+    device_context: DeviceContext = .none,
+    _unused_2: u1 = 0,
+    /// Disables __Close__ on the window menu.
+    no_close: bool = false,
+    _unused_3: u1 = 0,
+    /// Saves, as a bitmap,
+    /// the portion of the screen image obscured by a window of this class.
+    /// When the window is removed,
+    /// the system uses the saved bitmap to restore the screen image,
+    /// including other windows that were obscured.
+    /// Therefore, the system does not send `Paint` messages
+    /// to windows that were obscured
+    /// if the memory used by the bitmap has not been discarded
+    /// and if other screen actions have not invalidated the stored image.
+    ///
+    /// This style is useful for small windows
+    /// (for example, menus or dialog boxes)
+    /// that are displayed briefly and then removed
+    /// before other screen activity takes place.
+    /// This style increases the time required to display the window,
+    /// because the system must first allocate memory to store the bitmap.
+    save_bits: bool = false,
+    /// Aligns the window's client area on a byte boundary (in the x direction).
+    /// This style affects the width of the window
+    /// and its horizontal placement on the display.
+    byte_align_client: bool = false,
+    /// Aligns the window on a byte boundary (in the x direction).
+    /// This style affects the width of the window
+    /// and its horizontal placement on the display.
+    byte_align_window: bool = false,
+    /// Indicates that the window class is an application global class.
+    global_class: bool = false,
+    _unused_4: u2 = 0,
+    /// Enables the drop shadow effect on a window.
+    /// The effect is turned on and off through `SPI_SETDROPSHADOW`.
+    /// Typically, this is enabled for small, short-lived windows such as menus
+    /// to emphasize their Z-order relationship to other windows.
+    /// Windows created from a class with this style must be top-level windows;
+    /// they may not be child windows.
+    drop_shadow: bool = false,
+    _padding: @Type(.{ .int = .{
+        .signedness = .unsigned,
+        .bits = @bitSizeOf(UINT) - 18,
+    }}) = 0,
+
+    pub const DeviceContext = enum(u3) {
+        /// No device context style is specified.
+        none    = 0b000,
+        /// Allocates a unique device context for each window in the class.
+        own     = 0b001,
+        /// Allocates one device context to be shared by all windows in the class.
+        /// Because window classes are process specific,
+        /// it is possible for multiple threads of an application
+        /// to create a window of the same class.
+        /// It is also possible for the threads to attempt to use
+        /// the device context simultaneously.
+        /// When this happens, the system allows only one thread
+        /// to successfully finish its drawing operation.
+        class   = 0b010,
+        /// Sets the clipping rectangle of the child window to that of
+        /// the parent window so that the child can draw on the parent.
+        /// A window with this style bit receives a regular device context
+        /// from the system's cache of device contexts.
+        /// It does not give the child the parent's device context
+        /// or device context settings.
+        /// Specifying this bit enhances an application's performance.
+        parent  = 0b100,
+        _,
+    };
+};
+
+test WindowClassStyle {
+    try testing.expectEqual(
+        @as(UINT, CS.VREDRAW), @as(UINT, @bitCast(WindowClassStyle{ .vertical_redraw = true })));
+    try testing.expectEqual(
+        @as(UINT, CS.HREDRAW), @as(UINT, @bitCast(WindowClassStyle{ .horizontal_redraw = true })));
+    try testing.expectEqual(
+        @as(UINT, CS.DBLCLKS), @as(UINT, @bitCast(WindowClassStyle{ .double_clicks = true })));
+    try testing.expectEqual(
+        @as(UINT, CS.OWNDC), @as(UINT, @bitCast(WindowClassStyle{ .device_context = .own })));
+    try testing.expectEqual(
+        @as(UINT, CS.CLASSDC), @as(UINT, @bitCast(WindowClassStyle{ .device_context = .class })));
+    try testing.expectEqual(
+        @as(UINT, CS.PARENTDC), @as(UINT, @bitCast(WindowClassStyle{ .device_context = .parent })));
+    try testing.expectEqual(
+        @as(UINT, CS.NOCLOSE), @as(UINT, @bitCast(WindowClassStyle{ .no_close = true })));
+    try testing.expectEqual(
+        @as(UINT, CS.SAVEBITS), @as(UINT, @bitCast(WindowClassStyle{ .save_bits = true })));
+    try testing.expectEqual(
+        @as(UINT, CS.BYTEALIGNCLIENT), @as(UINT, @bitCast(WindowClassStyle{ .byte_align_client = true })));
+    try testing.expectEqual(
+        @as(UINT, CS.BYTEALIGNWINDOW), @as(UINT, @bitCast(WindowClassStyle{ .byte_align_window = true })));
+    try testing.expectEqual(
+        @as(UINT, CS.GLOBALCLASS), @as(UINT, @bitCast(WindowClassStyle{ .global_class = true })));
+    try testing.expectEqual(
+        @as(UINT, CS.DROPSHADOW), @as(UINT, @bitCast(WindowClassStyle{ .drop_shadow = true })));
+}
+
 pub const WindowStyle = packed struct (u32) {
     _padding: u16 = 0,
     /// The window is a control
@@ -2327,6 +2438,21 @@ pub const WM = struct {
     pub const XBUTTONDBLCLK = 0x020D;
     pub const XBUTTONDOWN = 0x020B;
     pub const XBUTTONUP = 0x020C;
+};
+
+pub const CS = struct {
+    pub const BYTEALIGNCLIENT = 0x1000;
+    pub const BYTEALIGNWINDOW = 0x2000;
+    pub const CLASSDC = 0x0040;
+    pub const DBLCLKS = 0x0008;
+    pub const DROPSHADOW = 0x00020000;
+    pub const GLOBALCLASS = 0x4000;
+    pub const HREDRAW = 0x0002;
+    pub const NOCLOSE = 0x0200;
+    pub const OWNDC = 0x0020;
+    pub const PARENTDC = 0x0080;
+    pub const SAVEBITS = 0x0800;
+    pub const VREDRAW = 0x0001;
 };
 
 pub const WS = struct {
