@@ -90,6 +90,19 @@ pub const Message = union {
         }
     }
 
+    pub const Destroy = struct {
+        pub const message = WM.CREATE;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) void {
+            assert(uMsg == message);
+            _ = wParam;
+            _ = lParam;
+            return {};
+        }
+    };
+
     /// Sent after a window has been moved.
     pub const Move = struct {
         /// The x-coordinate of the upper left corner of the client area of the window.
