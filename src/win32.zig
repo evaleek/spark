@@ -24,6 +24,7 @@ pub const Message = union {
     /// It is more efficient to perform any move or size change processing
     /// during this message without calling `DefWindowProc`.
     pub const WindowPositionChanged = struct {
+        /// The `hwnd` listed in this event's inner struct.
         window: HWND,
         /// The new position of the left edge of the window.
         x: c_int,
@@ -63,13 +64,8 @@ pub const Message = union {
                 .y = l.y,
                 .width = l.cx,
                 .height = l.cy,
-                .z = switch (l.hwndInsertAfter) {
-                    HWNDZ.BOTTOM,
-                    HWNDZ.NOTOPMOST,
-                    HWNDZ.TOP,
-                    HWNDZ.TOPMOST => @enumFromInt(l.hwndInsertAfter),
-                    else => l.hwndInsertAfter,
-                },
+                .z = if (std.enums.fromInt(WindowInsertAfter, l.hwndInsertAfter))
+                    |order| Z{ .order = order } else Z{ .after = l.hwndInsertAfter },
                 .flags = @bitCast(l.flags),
             };
         }
