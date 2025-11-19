@@ -90,8 +90,40 @@ pub const Message = union {
         }
     }
 
+    /// Sent when a window is being destroyed.
+    /// It is sent to the window procedure of the window being destroyed
+    /// after the window is removed from the screen.
+    ///
+    /// This message is sent first to the window being destroyed
+    /// and then to the child windows (if any) as they are destroyed.
+    /// During the processing of the message,
+    /// it can be assumed that all child windows still exist.
+    ///
+    /// A window receives this message through its `WindowProc` function.
     pub const Destroy = struct {
         pub const message = WM.DESTROY;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) void {
+            assert(uMsg == message);
+            _ = wParam;
+            _ = lParam;
+            return {};
+        }
+    };
+
+    /// The `DestroyWindow` function sends this message to the window
+    /// following the `Destroy` message.
+    /// `NonclientDestroy` is used to free the Windows memory object
+    /// associated with the window.
+    ///
+    /// This message is sent after the child windows have been destroyed.
+    /// In contrast, `Destroy` is sent before the child windows are destroyed.
+    ///
+    /// A window recieves this message through its `WindowProc` function.
+    pub const NonclientDestroy = struct {
+        pub const message = WM.NCDESTROY;
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
