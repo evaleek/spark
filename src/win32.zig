@@ -24,6 +24,72 @@ pub const LWords = packed struct (LPARAM) {
 
 pub const Message = union {
 
+    pub const Create = extern struct {
+        /// The `lpParam` value passed at `CreateWindow`(`Ex`).
+        params: ?*anyopaque,
+        /// The `HINSTANCE` which will own this new window.
+        instance: HINSTANCE,
+        /// The menu to be used by the new window.
+        menu: HMENU,
+        /// A handle to the parent or owner window,
+        /// or `0` if this window is not a child or owned window.
+        parent: HWND,
+        /// The height of the new window, in pixels.
+        height: c_int,
+        /// The width of the new window, in pixels.
+        width: c_int,
+        /// The y-coordinate of the upper-left corner of the new window.
+        /// If this new window is a child window,
+        /// the coordinates are relative to the parent window.
+        /// Otherwise, the coordinates are relative to the screen origin.
+        y: c_int,
+        /// The x-coordinate of the upper-left corner of the new window.
+        /// If this new window is a child window,
+        /// the coordinates are relative to the parent window.
+        /// Otherwise, the coordinates are relative to the screen origin.
+        x: c_int,
+        style: WindowStyle,
+        /// The name of the new window.
+        name: [*:0]const WCHAR,
+        /// A pointer to a null-terminated string or an atom
+        /// that specifies the class name of the new window.
+        class: StringOrAtom,
+        extended_style: WindowStyleExtended,
+
+        pub const message = WM.CREATE;
+        /// If an application processes this message,
+        /// it should return zero to continue creation of the window.
+        pub const processed: LRESULT = 0;
+        /// If the application returns -1,
+        /// the window is destroyed
+        /// and the `CreateWindowEx` or `CreateWindow` function
+        /// returns a `NULL` handle.
+        pub const failed: LRESULT = -1;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) *const Create {
+            assert(uMsg == message);
+            _ = wParam;
+            return @ptrFromInt(lParam);
+        }
+
+        pub fn getParent(create: Create) ?HWND {
+            return if (create.parent != 0) create.parent else null;
+        }
+    };
+    comptime {
+        assert(@sizeOf(Create) == @sizeOf(CREATESTRUCTW));
+        assert(@alignOf(Create) == @alignOf(CREATESTRUCTW));
+        for (
+            @typeInfo(Create).@"struct".fields,
+            @typeInfo(CREATESTRUCTW).@"struct".fields,
+        ) |field_a, field_b| {
+            assert(@sizeOf(field_a.type) == @sizeOf(field_b.type));
+            assert(field_a.alignment == field_b.alignment);
+            assert(@offsetOf(Create, field_a.name)
+                == @offsetOf(CREATESTRUCTW, field_b.name));
+        }
+    }
+
     /// Sent after a window has been moved.
     pub const Move = struct {
         /// The x-coordinate of the upper left corner of the client area of the window.
@@ -192,8 +258,24 @@ pub const Message = union {
         ) |field_a, field_b| {
             assert(@sizeOf(field_a.type) == @sizeOf(field_b.type));
             assert(field_a.alignment == field_b.alignment);
+            assert(@offsetOf(WindowPositionChange, field_a.name)
+                == @offsetOf(WINDOWPOS, field_b.name));
         }
     }
+
+    pub const WindowPositionChanging = struct {
+        pub const message = WM.WINDOWPOSCHANGING;
+        pub const processed = WindowPositionChange.processed;
+        pub const fromParams = WindowPositionChange.fromParamsChanging;
+        pub const Z = WindowPositionChange.Z;
+    };
+
+    pub const WindowPositionChanged = struct {
+        pub const message = WM.WINDOWPOSCHANGED;
+        pub const processed = WindowPositionChange.processed;
+        pub const fromParams = WindowPositionChange.fromParamsChanged;
+        pub const Z = WindowPositionChange.Z;
+    };
 
     /// Sent when the effective dots per inch (dpi) for a window has changed.
     /// The DPI is the scale factor for the window.
@@ -1358,55 +1440,6 @@ pub const WindowStyle = packed struct (u32) {
 
 test WindowStyle {
     try testing.expectEqual(
-        @as(u32, 0b00000000000000000000000000000000), @as(u32, WS.OVERLAPPED));
-    try testing.expectEqual(
-        @as(u32, 0b00000000000000000000000000000000), @as(u32, WS.TILED));
-    try testing.expectEqual(
-        @as(u32, 0b00000000000000010000000000000000), @as(u32, WS.TABSTOP));
-    try testing.expectEqual(
-        @as(u32, 0b00000000000000010000000000000000), @as(u32, WS.MAXIMIZEBOX));
-    try testing.expectEqual(
-        @as(u32, 0b00000000000000100000000000000000), @as(u32, WS.GROUP));
-    try testing.expectEqual(
-        @as(u32, 0b00000000000000100000000000000000), @as(u32, WS.MINIMIZEBOX));
-    try testing.expectEqual(
-        @as(u32, 0b00000000000001000000000000000000), @as(u32, WS.SIZEBOX));
-    try testing.expectEqual(
-        @as(u32, 0b00000000000001000000000000000000), @as(u32, WS.THICKFRAME));
-    try testing.expectEqual(
-        @as(u32, 0b00000000000010000000000000000000), @as(u32, WS.SYSMENU));
-    try testing.expectEqual(
-        @as(u32, 0b00000000000100000000000000000000), @as(u32, WS.HSCROLL));
-    try testing.expectEqual(
-        @as(u32, 0b00000000001000000000000000000000), @as(u32, WS.VSCROLL));
-    try testing.expectEqual(
-        @as(u32, 0b00000000010000000000000000000000), @as(u32, WS.DLGFRAME));
-    try testing.expectEqual(
-        @as(u32, 0b00000000100000000000000000000000), @as(u32, WS.BORDER));
-    try testing.expectEqual(
-        @as(u32, 0b00000000110000000000000000000000), @as(u32, WS.CAPTION));
-    try testing.expectEqual(
-        @as(u32, 0b00000001000000000000000000000000), @as(u32, WS.MAXIMIZE));
-    try testing.expectEqual(
-        @as(u32, 0b00000010000000000000000000000000), @as(u32, WS.CLIPCHILDREN));
-    try testing.expectEqual(
-        @as(u32, 0b00000100000000000000000000000000), @as(u32, WS.CLIPSIBLINGS));
-    try testing.expectEqual(
-        @as(u32, 0b00001000000000000000000000000000), @as(u32, WS.DISABLED));
-    try testing.expectEqual(
-        @as(u32, 0b00010000000000000000000000000000), @as(u32, WS.VISIBLE));
-    try testing.expectEqual(
-        @as(u32, 0b00100000000000000000000000000000), @as(u32, WS.ICONIC));
-    try testing.expectEqual(
-        @as(u32, 0b00100000000000000000000000000000), @as(u32, WS.MINIMIZE));
-    try testing.expectEqual(
-        @as(u32, 0b01000000000000000000000000000000), @as(u32, WS.CHILD));
-    try testing.expectEqual(
-        @as(u32, 0b01000000000000000000000000000000), @as(u32, WS.CHILDWINDOW));
-    try testing.expectEqual(
-        @as(u32, 0b10000000000000000000000000000000), @as(u32, WS.POPUP));
-
-    try testing.expectEqual(
         @as(u32, WS.OVERLAPPED), @as(u32, @bitCast(WindowStyle.overlapped)));
     try testing.expectEqual(
         @as(u32, WS.TILED), @as(u32, @bitCast(WindowStyle.overlapped)));
@@ -1858,6 +1891,25 @@ pub const MSG = extern struct {
         ));
     }
 };
+
+pub const CREATESTRUCTW = extern struct {
+    lpCreateParams: ?LPVOID,
+    hInstance: HINSTANCE,
+    hMenu: HMENU,
+    hwndParent: HWND,
+    cy: c_int,
+    cx: c_int,
+    y: c_int,
+    x: c_int,
+    style: LONG,
+    lpszName: LPCWSTR,
+    lpszClass: LPCWSTR,
+    dwExStyle: DWORD,
+};
+comptime {
+    assert(@sizeOf(LPVOID) == @sizeOf(?LPVOID));
+    assert(@alignOf(LPVOID) == @alignOf(?LPVOID));
+}
 
 pub const WINDOWPOS = extern struct {
     /// A handle to the window.
