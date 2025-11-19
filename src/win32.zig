@@ -12,6 +12,73 @@ pub const LWords = packed struct (LPARAM) {
 
 pub const Message = union {
 
+    /// Sent after a window has been moved.
+    pub const Move = struct {
+        /// The x-coordinate of the upper left corner of the client area of the window.
+        x: i16,
+        /// The y-coordinate of the upper left corner of the client area of the window.
+        y: i16,
+
+        pub const message = WM.MOVE;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Move {
+            assert(uMsg == message);
+            const l: LWords = @bitCast(lParam);
+            _ = wParam;
+            return Move{
+                .x = @bitCast(l.low),
+                .y = @bitCast(l.high),
+            };
+        }
+    };
+
+    /// Sent to a window after its size has changed.
+    pub const Size = struct {
+        /// The type of resizing requested.
+        request: Request,
+        /// The new width of the client area.
+        width: u16,
+        /// The new height of the client area.
+        height: u16,
+
+        pub const message = WM.SIZE;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub const Request = enum (WPARAM) {
+            /// Message is sent to all pop-up windows
+            /// when some other window is maximized.
+            max_hide = SIZE.MAXHIDE,
+            /// The window has been maximized.
+            maximized = SIZE.MAXIMIZED,
+            /// Message is sent to all pop-up windows
+            /// when some other window has been restored to its former size.
+            max_show = SIZE.MAXSHOW,
+            /// The window has been minimized.
+            minimized = SIZE.MINIMIZED,
+            /// The window has been resized,
+            /// but neither the `minimized` nor `maximized` value applies.
+            restored = SIZE.RESTORED,
+            _,
+
+            pub fn fromParam(wParam: WPARAM) Request {
+                return @enumFromInt(wParam);
+            }
+        };
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Size {
+            assert(uMsg == message);
+            const l: LWords = @bitCast(lParam);
+            return Size{
+                .request = .fromParam(wParam),
+                .width = l.low,
+                .height = l.high,
+            };
+        }
+    };
+
     /// Sent to a window whose size, position, or place in the Z-order
     /// is about to change (for `*CHANGING`) or has changed (for `*CHANGED`)
     /// as a result of a call to the `SetWindowPos` function
@@ -116,69 +183,28 @@ pub const Message = union {
         }
     }
 
-    /// Sent after a window has been moved.
-    pub const Move = struct {
-        /// The x-coordinate of the upper left corner of the client area of the window.
-        x: i16,
-        /// The y-coordinate of the upper left corner of the client area of the window.
-        y: i16,
+    /// This message is sent to all top-level windows,
+    /// and posted to all others,
+    /// when the display resolution has changed.
+    pub const DisplayChange = struct {
+        /// The new display bit depth, in bits per pixel.
+        bits_per_pixel: usize,
+        /// The new horizontal resolution of the screen.
+        horizontal: u16,
+        /// The new vertical resolution of the screen.
+        vertical: u16,
 
         pub const message = WM.MOVE;
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Move {
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) DisplayChange {
             assert(uMsg == message);
             const l: LWords = @bitCast(lParam);
-            _ = wParam;
-            return Move{
-                .x = @bitCast(l.low),
-                .y = @bitCast(l.high),
-            };
-        }
-    };
-
-    /// Sent to a window after its size has changed.
-    pub const Size = struct {
-        /// The type of resizing requested.
-        request: Request,
-        /// The new width of the client area.
-        width: u16,
-        /// The new height of the client area.
-        height: u16,
-
-        pub const message = WM.SIZE;
-        /// If an application processes this message, it should return this value.
-        pub const processed: LRESULT = 0;
-
-        pub const Request = enum (WPARAM) {
-            /// Message is sent to all pop-up windows
-            /// when some other window is maximized.
-            max_hide = SIZE.MAXHIDE,
-            /// The window has been maximized.
-            maximized = SIZE.MAXIMIZED,
-            /// Message is sent to all pop-up windows
-            /// when some other window has been restored to its former size.
-            max_show = SIZE.MAXSHOW,
-            /// The window has been minimized.
-            minimized = SIZE.MINIMIZED,
-            /// The window has been resized,
-            /// but neither the `minimized` nor `maximized` value applies.
-            restored = SIZE.RESTORED,
-            _,
-
-            pub fn fromParam(wParam: WPARAM) Request {
-                return @enumFromInt(wParam);
-            }
-        };
-
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Size {
-            assert(uMsg == message);
-            const l: LWords = @bitCast(lParam);
-            return Size{
-                .request = .fromParam(wParam),
-                .width = l.low,
-                .height = l.high,
+            return DisplayChange{
+                .bits_per_pixel = wParam,
+                .horizontal = l.low,
+                .vertical = l.high,
             };
         }
     };
