@@ -135,6 +135,38 @@ pub const Message = union {
         }
     };
 
+    /// Indicates a request to terminate an application,
+    /// and is generated when the application calls the `PostQuitMessage` function.
+    /// This message causes the `GetMessage` function to return zero.
+    ///
+    /// The `Quit` message is not associated with a window
+    /// and therefore will never be received through a window's window procedure.
+    /// It is retrieved only by the `GetMessage` or `PeekMessage` functions.
+    ///
+    /// Do not post the `Quit` message using the `PostMessage` function;
+    /// use `PostQuitMessage`.
+    pub const Quit = struct {
+        /// The application exit code given in `PostQuitMessage`.
+        exit: c_int,
+
+        pub const message = WM.QUIT;
+        // This message does not have a return value
+        // because it causes the message loop to terminate
+        // before the message is sent to the application's window procedure.
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Quit {
+            assert(uMsg == message);
+            _ = lParam;
+            const Mask = @Type(.{ .int = .{
+                .signedness = .unsigned,
+                .bits = @bitSizeOf(c_int),
+            }});
+            const masked: Mask = @truncate(wParam);
+            const code: c_int = @bitCast(masked);
+            return Quit{ .exit = code };
+        }
+    };
+
     /// The `DefWindowProc` function for this message
     /// hides or shows the window as specified by the message.
     /// If a window has the `visible` style when it is created,
