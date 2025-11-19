@@ -132,7 +132,7 @@ pub const Message = union {
             assert(uMsg == message);
             return ShowWindow{
                 .shown = wParam != 0,
-                .status = .fromParam(lParam),
+                .status = @enumFromInt(lParam),
             };
         }
     };
