@@ -517,6 +517,45 @@ pub const Message = union {
             };
         }
     };
+
+    /// Sent to both the window being activated and the window being deactivated.
+    /// If the windows use the same input queue,
+    /// the message is sent synchronously,
+    /// first to the window procedure of the top-level window being deactivated,
+    /// then to the window procedure of the top-level window being activated.
+    /// If the windows use different input queues,
+    /// the message is sent asynchronously,
+    /// so the window is activated immediately.
+    ///
+    /// If the window is being activated and is not minimized,
+    /// the `DefWindowProc` function sets the keyboard focus to the window.
+    /// If the window is activated by a mouse click,
+    /// it also receives a `MOUSEACTIVATE` message.
+    pub const Activate = struct {
+        activation: WindowActivation,
+        /// The minimized state of the window being activated or deactivated.
+        /// `true` indicates the window is minimized.
+        minimized: bool,
+        /// If this window is being deactivated,
+        /// a handle to the window being activated, if any.
+        /// If this window is being activated,
+        /// a handle to the window being deactivated, if any.
+        other: ?HWND,
+
+        pub const message = WM.ACTIVATE;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Activate {
+            assert(uMsg == message);
+            const w: WWords = @bitCast(wParam);
+            return Activate{
+                .activation = @enumFromInt(w.low),
+                .minimized = w.high!=0,
+                .other = if (lParam != 0) @ptrFromInt(lParam) else null,
+            };
+        }
+    };
 };
 
 pub const WindowsMessage = enum(u16) {
@@ -2162,6 +2201,18 @@ pub const WindowSpecialZ = enum (i2) {
     top_most = HWNDZ.TOPMOST,
 };
 
+pub const WindowActivation = enum(WORD) {
+    /// Activated by some method other than a mouse click
+    /// (for example, by a call to the `SetActiveWindow` function
+    /// or by use of the keyboard interface to select the window).
+    active = WA.ACTIVE,
+    /// Activated by a mouse click.
+    click_active = WA.CLICKACTIVE,
+    /// Deactivated.
+    inactive = WA.INACTIVE,
+    _,
+};
+
 pub const MSG = extern struct {
     /// A handle to the window whose window procedure receives the message.
     /// This member is `null` when the message is a thread message.
@@ -2613,6 +2664,12 @@ pub const SIZE = struct {
     pub const MAXSHOW = 3;
     pub const MINIMIZED = 1;
     pub const RESTORED = 0;
+};
+
+pub const WA = struct {
+    pub const ACTIVE = 1;
+    pub const CLICKACTIVE = 2;
+    pub const INACTIVE = 0;
 };
 
 // Assumed in some field types of message parse structs
