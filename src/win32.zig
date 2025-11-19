@@ -91,7 +91,7 @@ pub const Message = union {
     }
 
     pub const Destroy = struct {
-        pub const message = WM.CREATE;
+        pub const message = WM.DESTROY;
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
@@ -100,6 +100,40 @@ pub const Message = union {
             _ = wParam;
             _ = lParam;
             return {};
+        }
+    };
+
+    /// The `DefWindowProc` function for this message
+    /// hides or shows the window as specified by the message.
+    /// If a window has the `visible` style when it is created,
+    /// the window receives this message after it is created,
+    /// but before it is displayed.
+    /// A window also receives this message when its visibility state is changed
+    /// by the `ShowWindow` or `ShowOwnedPopups` function.
+    ///
+    /// This message is not sent under the following circumstances:
+    ///
+    /// - When a top-level, overlapped window
+    ///   is created with the `maximize` or `minimize` style
+    /// - When the `show_normal` flag is specified
+    ///   in the call to the `ShowWindow` function.
+    pub const ShowWindow = struct {
+        /// Indicates whether a window is being shown.
+        /// If `true`, the window is being shown.
+        /// If `false`, the window is being hidden.
+        shown: bool,
+        status: ShowStatus,
+
+        pub const message = WM.SHOWWINDOW;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) ShowWindow {
+            assert(uMsg == message);
+            return ShowWindow{
+                .shown = wParam != 0,
+                .status = .fromParam(lParam),
+            };
         }
     };
 
@@ -1714,6 +1748,24 @@ test WindowStyleExtended {
         @as(u32, WS.EX.WINDOWEDGE), @as(u32, @bitCast(WindowStyleExtended{ .window_edge = true })));
 }
 
+pub const ShowStatus = enum (LPARAM) {
+    /// The window is being shown as a result of a call to
+    /// the `ShowWindow` or `ShowOwnedPopups` function.
+    user = 0,
+    /// The window is being uncovered
+    /// because a maximize window was restored or minimized.
+    other_unzoom = SW.OTHERUNZOOM,
+    /// The window is being covered
+    /// by another window that has been maximized.
+    other_zoom = SW.OTHERZOOM,
+    /// The window's owner window is being minimized.
+    parent_closing = SW.PARENTCLOSING,
+    /// The window's owner window is being restored.
+    parent_opening = SW.PARENTOPENING,
+    _,
+};
+
+
 /// The `flags` field of `WINDOWPOS`.
 pub const SetWindowPosition = packed struct (UINT) {
     /// Retains the current size (ignores the `cx` and `cy` members).
@@ -2275,6 +2327,13 @@ pub const HWNDZ = struct {
     pub const NOTOPMOST = -2;
     pub const TOP = 0;
     pub const TOPMOST = -1;
+};
+
+pub const SW = struct {
+    pub const OTHERUNZOOM = 4;
+    pub const OTHERZOOM = 2;
+    pub const PARENTCLOSING = 1;
+    pub const PARENTOPENING = 3;
 };
 
 pub const SWP = struct {
