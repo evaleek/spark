@@ -477,7 +477,7 @@ pub const Message = union {
     pub const SetFocus = struct {
         /// A handle to the window that has lost the keyboard focus,
         /// if any.
-        previous: ?HWND,
+        donor: ?HWND,
 
         pub const message = WM.SETFOCUS;
         /// If an application processes this message, it should return this value.
@@ -487,7 +487,33 @@ pub const Message = union {
             assert(uMsg == message);
             _ = lParam;
             return SetFocus{
-                .previous = if (wParam != 0) @ptrFromInt(wParam) else null,
+                .donor = if (wParam != 0) @ptrFromInt(wParam) else null,
+            };
+        }
+    };
+
+    /// Sent to a window immediately before it loses the keyboard focus.
+    ///
+    /// This event is the intended time to destroy the caret.
+    ///
+    /// While processing this message, do not make any function calls
+    /// that display or activate a window.
+    /// This causes the thread to yield control
+    /// and can cause the application to stop responding to messages.
+    pub const KillFocus = struct {
+        /// A handle to the window that receives the keyboard focus,
+        /// if any.
+        recipient: ?HWND,
+
+        pub const message = WM.KILLFOCUS;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) KillFocus {
+            assert(uMsg == message);
+            _ = lParam;
+            return KillFocus{
+                .recipient = if (wParam != 0) @ptrFromInt(wParam) else null,
             };
         }
     };
