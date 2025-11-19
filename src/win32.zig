@@ -1463,6 +1463,211 @@ test WindowStyle {
         @as(u32, WS.POPUPWINDOW), @as(u32, @bitCast(WindowStyle.pop_up_window)));
 }
 
+pub const WindowStyleExtended = packed struct (u32) {
+    /// The window has a double border;
+    /// the window can, optionally, be created with a title bar
+    /// by specifying the `.caption` style in the style parameter.
+    dialog_modal_frame: bool = false,
+    _unused_0: u1 = 0,
+    /// The child window created with this style
+    /// does not send the `WM_PARENTNOTIFY` message to its parent window
+    /// when it is created or destroyed.
+    no_parent_notify: bool = false,
+    /// The window should be placed above all non-topmost windows
+    /// and should stay above them, even when the window is deactivated.
+    /// To add or remove this style, use the `SetWindowPos` function.
+    topmost: bool = false,
+    /// The window accepts drag-drop files.
+    accept_files: bool = false,
+    /// The window should not be painted until siblings beneath the window
+    /// (that were created by the same thread) have been painted.
+    /// The window appears transparent because
+    /// the bits of underlying sibling windows have already been painted.
+    ///
+    /// To achieve transparency without these restrictions, use the SetWindowRgn function.
+    transparent: bool = false,
+    /// The window is a MDI child window.
+    multiple_document_interface_child: bool = false,
+    /// The window is intended to be used as a floating toolbar.
+    /// A tool window has a title bar that is shorter than a normal title bar,
+    /// and the window title is drawn using a smaller font.
+    /// A tool window does not appear in the taskbar
+    /// or in the dialog that appears when the user presses ALT+TAB.
+    /// If a tool window has a system menu,
+    /// its icon is not displayed on the title bar.
+    /// However, you can display the system menu
+    /// by right-clicking or by typing ALT+SPACE.
+    tool_window: bool = false,
+    /// The window has a border with a raised edge.
+    window_edge: bool = false,
+    /// The window has a border with a sunken edge.
+    client_edge: bool = false,
+    /// The title bar of the window includes a question mark.
+    /// When the user clicks the question mark,
+    /// the cursor changes to a question mark with a pointer.
+    /// If the user then clicks a child window,
+    /// the child receives a `WM_HELP` message.
+    /// The child window should pass the message to the parent window procedure,
+    /// which should call the `WinHelp` function
+    /// using the `HELP_WM_HELP` command.
+    /// The Help application displays a pop-up window
+    /// that typically contains help for the child window.
+    ///
+    /// This style cannot be used with the 'MAXIMIZEBOX' or 'MINIMIZEBOX' styles.
+    context_help: bool = false,
+    _unused_1: u1 = 0,
+    /// The window has generic "right-aligned" properties.
+    /// This depends on the window class.
+    /// This style has an effect
+    /// only if the shell language is Hebrew, Arabic,
+    /// or another language that supports reading-order alignment;
+    /// otherwise, the style is ignored.
+    ///
+    /// Using this style for static or edit controls
+    /// has the same effect as using the `SS_RIGHT` or `ES_RIGHT` style,
+    /// respectively. Using this style with button controls
+    /// has the same effect as using `BS_RIGHT` and `BS_RIGHTBUTTON` styles.
+    right: bool = false,
+    /// If the shell language is Hebrew, Arabic,
+    /// or another language that supports reading-order alignment,
+    /// the window text is displayed using right-to-left reading-order properties.
+    /// For other languages, the style is ignored.
+    right_to_left_reading: bool = false,
+    /// If the shell language is Hebrew, Arabic,
+    /// or another language that supports reading order alignment,
+    /// the vertical scroll bar (if present) is to the left of the client area.
+    /// For other languages, the style is ignored.
+    left_scrollbar: bool = false,
+    _unused_2: u1 = 0,
+    /// The window itself contains child windows
+    /// that should take part in dialog box navigation.
+    /// If this style is specified,
+    /// the dialog manager recurses into children of this window
+    /// when performing navigation operations
+    /// such as handling the TAB key, an arrow key, or a keyboard mnemonic.
+    control_parent: bool = false,
+    /// The window has a three-dimensional border style
+    /// intended to be used for items that do not accept user input.
+    static_edge: bool = false,
+    /// Forces a top-level window onto the taskbar when the window is visible.
+    app_window: bool = false,
+    /// The window is a layered window.
+    /// This style cannot be used if the window has a class style
+    /// of either `CS_OWNDC` or `CS_CLASSDC`.
+    ///
+    /// Windows 8: The WS_EX_LAYERED style is supported
+    /// for top-level windows and child windows.
+    /// Previous Windows versions support `WS_EX_LAYERED` only for top-level windows.
+    layered: bool = false,
+    /// The window does not pass its window layout to its child windows.
+    no_inherit_layout: bool = false,
+    /// The window does not render to a redirection surface.
+    /// This is for windows that do not have visible content
+    /// or that use mechanisms other than surfaces to provide their visual.
+    no_redirection_bitmap: bool = false,
+    /// If the shell language is Hebrew, Arabic,
+    /// or another language that supports reading order alignment,
+    /// the horizontal origin of the window is on the right edge.
+    /// Increasing horizontal values advance to the left.
+    layout_right_to_left: bool = false,
+    _unused_3: u2 = 0,
+    /// Paints all descendants of a window
+    /// in bottom-to-top painting order using double-buffering.
+    /// Bottom-to-top painting order allows a descendent window
+    /// to have translucency (alpha) and transparency (color-key) effects,
+    /// but only if the descendent window also has the WS_EX_TRANSPARENT bit set.
+    /// Double-buffering allows the window and its descendents
+    /// to be painted without flicker.
+    /// This cannot be used if the window has a class style
+    /// of `CS_OWNDC`, `CS_CLASSDC`, or `CS_PARENTDC`.
+    ///
+    /// Windows 2000: This style is not supported.
+    composited: bool = false,
+    _unused_4: u1 = 0,
+    /// A top-level window created with this style
+    /// does not become the foreground window when the user clicks it.
+    /// The system does not bring this window to the foreground
+    /// when the user minimizes or closes the foreground window.
+    /// The window should not be activated through programmatic access
+    /// or via keyboard navigation by accessible technology, such as Narrator.
+    /// To activate the window,
+    /// use the `SetActiveWindow` or `SetForegroundWindow` function.
+    /// The window does not appear on the taskbar by default.
+    /// To force the window to appear on the taskbar,
+    /// use the `.app_window` style.
+    no_activate: bool = false,
+    _padding: u4 = 0,
+
+    /// The window is an overlapped window.
+    pub const overlapped_window = WindowStyleExtended{
+        .window_edge = true,
+        .client_edge = true,
+    };
+
+    /// The window is palette window,
+    /// which is a modeless dialog box that presents an array of commands.
+    pub const palette_window = WindowStyleExtended{
+        .window_edge = true,
+        .tool_window = true,
+        .topmost = true,
+    };
+};
+
+test WindowStyleExtended {
+    try testing.expectEqual(
+        @as(u32, WS.EX.ACCEPTFILES), @as(u32, @bitCast(WindowStyleExtended{ .accept_files = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.APPWINDOW), @as(u32, @bitCast(WindowStyleExtended{ .app_window = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.CLIENTEDGE), @as(u32, @bitCast(WindowStyleExtended{ .client_edge = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.COMPOSITED), @as(u32, @bitCast(WindowStyleExtended{ .composited = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.CONTEXTHELP), @as(u32, @bitCast(WindowStyleExtended{ .context_help = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.CONTROLPARENT), @as(u32, @bitCast(WindowStyleExtended{ .control_parent = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.DLGMODALFRAME), @as(u32, @bitCast(WindowStyleExtended{ .dialog_modal_frame = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.LAYERED), @as(u32, @bitCast(WindowStyleExtended{ .layered = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.LAYOUTRTL), @as(u32, @bitCast(WindowStyleExtended{ .layout_right_to_left = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.LEFT), @as(u32, @bitCast(WindowStyleExtended{})));
+    try testing.expectEqual(
+        @as(u32, WS.EX.LEFTSCROLLBAR), @as(u32, @bitCast(WindowStyleExtended{ .left_scrollbar = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.LTRREADING), @as(u32, @bitCast(WindowStyleExtended{})));
+    try testing.expectEqual(
+        @as(u32, WS.EX.MDICHILD), @as(u32, @bitCast(WindowStyleExtended{ .multiple_document_interface_child = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.NOACTIVATE), @as(u32, @bitCast(WindowStyleExtended{ .no_activate = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.NOINHERITLAYOUT), @as(u32, @bitCast(WindowStyleExtended{ .no_inherit_layout = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.NOPARENTNOTIFY), @as(u32, @bitCast(WindowStyleExtended{ .no_parent_notify = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.NOREDIRECTIONBITMAP), @as(u32, @bitCast(WindowStyleExtended{ .no_redirection_bitmap = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.OVERLAPPEDWINDOW), @as(u32, @bitCast(WindowStyleExtended.overlapped_window)));
+    try testing.expectEqual(
+        @as(u32, WS.EX.PALETTEWINDOW), @as(u32, @bitCast(WindowStyleExtended.palette_window)));
+    try testing.expectEqual(
+        @as(u32, WS.EX.RIGHT), @as(u32, @bitCast(WindowStyleExtended{ .right = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.RIGHTSCROLLBAR), @as(u32, @bitCast(WindowStyleExtended{})));
+    try testing.expectEqual(
+        @as(u32, WS.EX.RTLREADING), @as(u32, @bitCast(WindowStyleExtended{ .right_to_left_reading = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.STATICEDGE), @as(u32, @bitCast(WindowStyleExtended{ .static_edge = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.TOOLWINDOW), @as(u32, @bitCast(WindowStyleExtended{ .tool_window = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.TRANSPARENT), @as(u32, @bitCast(WindowStyleExtended{ .transparent = true })));
+    try testing.expectEqual(
+        @as(u32, WS.EX.WINDOWEDGE), @as(u32, @bitCast(WindowStyleExtended{ .window_edge = true })));
+}
+
 /// The `flags` field of `WINDOWPOS`.
 pub const SetWindowPosition = packed struct (UINT) {
     /// Retains the current size (ignores the `cx` and `cy` members).
@@ -1967,6 +2172,36 @@ pub const WS = struct {
         MAXIMIZEBOX;
     pub const VISIBLE = 0x10000000;
     pub const VSCROLL = 0x00200000;
+
+    pub const EX = struct {
+        pub const ACCEPTFILES = 0x00000010;
+        pub const APPWINDOW = 0x00040000;
+        pub const CLIENTEDGE = 0x00000200;
+        pub const COMPOSITED = 0x02000000;
+        pub const CONTEXTHELP = 0x00000400;
+        pub const CONTROLPARENT = 0x00010000;
+        pub const DLGMODALFRAME = 0x00000001;
+        pub const LAYERED = 0x00080000;
+        pub const LAYOUTRTL = 0x00400000;
+        pub const LEFT = 0x00000000;
+        pub const LEFTSCROLLBAR = 0x00004000;
+        pub const LTRREADING = 0x00000000;
+        pub const MDICHILD = 0x00000040;
+        pub const NOACTIVATE = 0x08000000;
+        pub const NOINHERITLAYOUT = 0x00100000;
+        pub const NOPARENTNOTIFY = 0x00000004;
+        pub const NOREDIRECTIONBITMAP = 0x00200000;
+        pub const OVERLAPPEDWINDOW = WINDOWEDGE | CLIENTEDGE;
+        pub const PALETTEWINDOW = WINDOWEDGE | TOOLWINDOW | TOPMOST;
+        pub const RIGHT = 0x00001000;
+        pub const RIGHTSCROLLBAR = 0x00000000;
+        pub const RTLREADING = 0x00002000;
+        pub const STATICEDGE = 0x00020000;
+        pub const TOOLWINDOW = 0x00000080;
+        pub const TOPMOST = 0x00000008;
+        pub const TRANSPARENT = 0x00000020;
+        pub const WINDOWEDGE = 0x00000100;
+    };
 };
 
 /// HWND_* (conflicts with HWND)
