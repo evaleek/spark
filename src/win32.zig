@@ -1,3 +1,15 @@
+pub const WWords = packed struct (WPARAM) {
+    /// LOWORD(WPARAM) equivalent
+    low: WORD,
+    /// HIWORD(WPARAM) equivalent
+    high: WORD,
+    /// Unused on 64-bit systems
+    _padding: @Type(.{ .int = .{
+        .signedness = .unsigned,
+        .bits = @bitSizeOf(WPARAM) - ( 2 * @bitSizeOf(WORD) ),
+    }}),
+};
+
 pub const LWords = packed struct (LPARAM) {
     /// LOWORD(LPARAM) equivalent
     low: WORD,
@@ -183,6 +195,47 @@ pub const Message = union {
         }
     }
 
+    /// Sent when the effective dots per inch (dpi) for a window has changed.
+    /// The DPI is the scale factor for the window.
+    /// There are multiple events that can cause the DPI to change.
+    /// The following list indicates the possible causes for the change in DPI.
+    ///
+    /// - The window is moved to a new monitor that has a different DPI.
+    /// - The DPI of the monitor hosting the window changes.
+    ///
+    /// The current DPI for a window always equals
+    /// the last DPI sent by this message.
+    /// This is the scale factor that the window should be scaling to
+    /// for threads that are aware of DPI changes.
+    pub const DPIChanged = struct {
+        /// The X-axis value of the new DPI of the window.
+        /// Identical to the Y-axis value for Windows apps.
+        x_dpi: u16,
+        /// The Y-axis value of the new DPI of the window.
+        /// Identical to the X-axis value for Windows apps.
+        y_dpi: u16,
+        /// A suggested new size and position of the current window
+        /// scaled for the new DPI.
+        ///
+        /// The expectation is that apps will reposition and resize windows
+        /// based on the suggestion when handling this message.
+        suggested_window: *const RECT,
+
+        pub const message = WM.DPICHANGED;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) DPIChanged {
+            assert(uMsg == message);
+            const w: WWords = @bitCast(wParam);
+            return DPIChanged{
+                .x_dpi = w.low,
+                .y_dpi = w.high,
+                .suggested_window = @intFromPtr(lParam),
+            };
+        }
+    };
+
     /// This message is sent to all top-level windows,
     /// and posted to all others,
     /// when the display resolution has changed.
@@ -194,7 +247,7 @@ pub const Message = union {
         /// The new vertical resolution of the screen.
         vertical: u16,
 
-        pub const message = WM.MOVE;
+        pub const message = WM.DISPLAYCHANGE;
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
@@ -1690,6 +1743,7 @@ pub const LPARAM = windows.LPARAM;
 pub const LRESULT = windows.LRESULT;
 pub const HWND = windows.HWND;
 pub const POINT = windows.POINT;
+pub const RECT = windows.RECT;
 
 const assert = std.debug.assert;
 
