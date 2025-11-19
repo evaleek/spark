@@ -470,6 +470,27 @@ pub const Message = union {
             };
         }
     };
+
+    /// Sent to a window after it has gained the keyboard focus.
+    ///
+    /// This event is the intended time to display a caret.
+    pub const SetFocus = struct {
+        /// A handle to the window that has lost the keyboard focus,
+        /// if any.
+        previous: ?HWND,
+
+        pub const message = WM.SETFOCUS;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) SetFocus {
+            assert(uMsg == message);
+            _ = lParam;
+            return SetFocus{
+                .previous = if (wParam != 0) @ptrFromInt(wParam) else null,
+            };
+        }
+    };
 };
 
 pub const WindowsMessage = enum(u16) {
