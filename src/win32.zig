@@ -1270,6 +1270,199 @@ pub const WindowsMessage = enum(u16) {
     _,
 };
 
+pub const WindowStyle = packed struct (u32) {
+    _padding: u16 = 0,
+    /// The window is a control
+    /// that can receive the keyboard focus when the user presses the TAB key,
+    /// or the window has a maximize button.
+    maximize_box_or_tabstop: bool = false,
+    /// The window is the first control of a group of controls,
+    /// or the window has a minimize button.
+    minimize_box_or_group: bool = false,
+    /// The window has a sizing border (also called 'THICKFRAME').
+    size_box: bool = false,
+    /// The window has a window menu on its title bar.
+    /// If this field is active, the `.frame` field must be `.caption`.
+    system_menu: bool = false,
+    /// The window has a horizontal scroll bar.
+    horizontal_scroll: bool = false,
+    /// The window has a vertical scroll bar.
+    vertical_scroll: bool = false,
+    frame: Frame = .none,
+    /// The window is initially maximized.
+    maximize: bool = false,
+    /// Excludes the area occupied by child windows
+    /// when drawing occurs within the parent window.
+    /// This style is used when creating the parent window.
+    clip_children: bool = false,
+    /// Clips child windows relative to each other;
+    /// that is, when a particular child window receives a PAINT message,
+    /// this style clips all other overlapping child windows
+    /// out of the region of the child window to be updated.
+    ///
+    /// If this style is not specified and child windows overlap,
+    /// it is possible, when drawing within the client area of a child window,
+    /// to draw within the client area of a neighboring child window.
+    clip_siblings: bool = false,
+    /// The window is initially disabled.
+    /// A disabled window cannot receive input from the user.
+    /// To change this after a window has been created,
+    /// use the `EnableWindow` function.
+    disabled: bool = false,
+    /// The window is initially visible.
+    /// This style can be turned on and off
+    /// by using the `ShowWindow` or `SetWindowPos` function.
+    visible: bool = false,
+    /// The window is initially minimized.
+    minimize: bool = false,
+    /// The window is a child window.
+    /// A window with this style cannot have a menu bar.
+    /// This style cannot be used with the `.pop_up` style.
+    child: bool = false,
+    /// The window is a pop-up window.
+    /// This style cannot be used with the `.child` style.
+    pop_up: bool = false,
+
+    pub const Frame = enum (u2) {
+        none = 0b00,
+        /// The window has a border of a style typically used with dialog boxes.
+        dialog = 0b01,
+        /// The window has a thin-line border.
+        border = 0b10,
+        /// The window has a thin-line border and a title bar.
+        caption = 0b11,
+    };
+
+    /// An overlapped window with no additional styles
+    /// (legacy name 'TILED').
+    pub const overlapped = WindowStyle{};
+
+    /// An overlapped window with default styles.
+    pub const overlapped_window = WindowStyle{
+        .frame = .caption,
+        .system_menu = true,
+        .size_box = true,
+        .minimize_box_or_group = true,
+        .maximize_box_or_tabstop = true,
+    };
+
+    /// A pop-up window.
+    /// The .frame` field must be set to `.caption`
+    /// to make the window menu visible.
+    pub const pop_up_window = WindowStyle{
+        .pop_up = true,
+        .frame = .border,
+        .system_menu = true,
+    };
+};
+
+test WindowStyle {
+    try testing.expectEqual(
+        @as(u32, 0b00000000000000000000000000000000), @as(u32, WS.OVERLAPPED));
+    try testing.expectEqual(
+        @as(u32, 0b00000000000000000000000000000000), @as(u32, WS.TILED));
+    try testing.expectEqual(
+        @as(u32, 0b00000000000000010000000000000000), @as(u32, WS.TABSTOP));
+    try testing.expectEqual(
+        @as(u32, 0b00000000000000010000000000000000), @as(u32, WS.MAXIMIZEBOX));
+    try testing.expectEqual(
+        @as(u32, 0b00000000000000100000000000000000), @as(u32, WS.GROUP));
+    try testing.expectEqual(
+        @as(u32, 0b00000000000000100000000000000000), @as(u32, WS.MINIMIZEBOX));
+    try testing.expectEqual(
+        @as(u32, 0b00000000000001000000000000000000), @as(u32, WS.SIZEBOX));
+    try testing.expectEqual(
+        @as(u32, 0b00000000000001000000000000000000), @as(u32, WS.THICKFRAME));
+    try testing.expectEqual(
+        @as(u32, 0b00000000000010000000000000000000), @as(u32, WS.SYSMENU));
+    try testing.expectEqual(
+        @as(u32, 0b00000000000100000000000000000000), @as(u32, WS.HSCROLL));
+    try testing.expectEqual(
+        @as(u32, 0b00000000001000000000000000000000), @as(u32, WS.VSCROLL));
+    try testing.expectEqual(
+        @as(u32, 0b00000000010000000000000000000000), @as(u32, WS.DLGFRAME));
+    try testing.expectEqual(
+        @as(u32, 0b00000000100000000000000000000000), @as(u32, WS.BORDER));
+    try testing.expectEqual(
+        @as(u32, 0b00000000110000000000000000000000), @as(u32, WS.CAPTION));
+    try testing.expectEqual(
+        @as(u32, 0b00000001000000000000000000000000), @as(u32, WS.MAXIMIZE));
+    try testing.expectEqual(
+        @as(u32, 0b00000010000000000000000000000000), @as(u32, WS.CLIPCHILDREN));
+    try testing.expectEqual(
+        @as(u32, 0b00000100000000000000000000000000), @as(u32, WS.CLIPSIBLINGS));
+    try testing.expectEqual(
+        @as(u32, 0b00001000000000000000000000000000), @as(u32, WS.DISABLED));
+    try testing.expectEqual(
+        @as(u32, 0b00010000000000000000000000000000), @as(u32, WS.VISIBLE));
+    try testing.expectEqual(
+        @as(u32, 0b00100000000000000000000000000000), @as(u32, WS.ICONIC));
+    try testing.expectEqual(
+        @as(u32, 0b00100000000000000000000000000000), @as(u32, WS.MINIMIZE));
+    try testing.expectEqual(
+        @as(u32, 0b01000000000000000000000000000000), @as(u32, WS.CHILD));
+    try testing.expectEqual(
+        @as(u32, 0b01000000000000000000000000000000), @as(u32, WS.CHILDWINDOW));
+    try testing.expectEqual(
+        @as(u32, 0b10000000000000000000000000000000), @as(u32, WS.POPUP));
+
+    try testing.expectEqual(
+        @as(u32, WS.OVERLAPPED), @as(u32, @bitCast(WindowStyle.overlapped)));
+    try testing.expectEqual(
+        @as(u32, WS.TILED), @as(u32, @bitCast(WindowStyle.overlapped)));
+    try testing.expectEqual(
+        @as(u32, WS.TABSTOP), @as(u32, @bitCast(WindowStyle{ .maximize_box_or_tabstop = true })));
+    try testing.expectEqual(
+        @as(u32, WS.MAXIMIZEBOX), @as(u32, @bitCast(WindowStyle{ .maximize_box_or_tabstop = true })));
+    try testing.expectEqual(
+        @as(u32, WS.GROUP), @as(u32, @bitCast(WindowStyle{ .minimize_box_or_group = true })));
+    try testing.expectEqual(
+        @as(u32, WS.MINIMIZEBOX), @as(u32, @bitCast(WindowStyle{ .minimize_box_or_group = true })));
+    try testing.expectEqual(
+        @as(u32, WS.SIZEBOX), @as(u32, @bitCast(WindowStyle{ .size_box = true })));
+    try testing.expectEqual(
+        @as(u32, WS.THICKFRAME), @as(u32, @bitCast(WindowStyle{ .size_box = true })));
+    try testing.expectEqual(
+        @as(u32, WS.SYSMENU), @as(u32, @bitCast(WindowStyle{ .system_menu = true })));
+    try testing.expectEqual(
+        @as(u32, WS.HSCROLL), @as(u32, @bitCast(WindowStyle{ .horizontal_scroll = true })));
+    try testing.expectEqual(
+        @as(u32, WS.VSCROLL), @as(u32, @bitCast(WindowStyle{ .vertical_scroll = true })));
+    try testing.expectEqual(
+        @as(u32, WS.DLGFRAME), @as(u32, @bitCast(WindowStyle{ .frame = .dialog })));
+    try testing.expectEqual(
+        @as(u32, WS.BORDER), @as(u32, @bitCast(WindowStyle{ .frame = .border })));
+    try testing.expectEqual(
+        @as(u32, WS.CAPTION), @as(u32, @bitCast(WindowStyle{ .frame = .caption })));
+    try testing.expectEqual(
+        @as(u32, WS.MAXIMIZE), @as(u32, @bitCast(WindowStyle{ .maximize = true })));
+    try testing.expectEqual(
+        @as(u32, WS.CLIPCHILDREN), @as(u32, @bitCast(WindowStyle{ .clip_children = true })));
+    try testing.expectEqual(
+        @as(u32, WS.CLIPSIBLINGS), @as(u32, @bitCast(WindowStyle{ .clip_siblings = true })));
+    try testing.expectEqual(
+        @as(u32, WS.DISABLED), @as(u32, @bitCast(WindowStyle{ .disabled = true })));
+    try testing.expectEqual(
+        @as(u32, WS.VISIBLE), @as(u32, @bitCast(WindowStyle{ .visible = true })));
+    try testing.expectEqual(
+        @as(u32, WS.ICONIC), @as(u32, @bitCast(WindowStyle{ .minimize = true })));
+    try testing.expectEqual(
+        @as(u32, WS.MINIMIZE), @as(u32, @bitCast(WindowStyle{ .minimize = true })));
+    try testing.expectEqual(
+        @as(u32, WS.CHILD), @as(u32, @bitCast(WindowStyle{ .child = true })));
+    try testing.expectEqual(
+        @as(u32, WS.CHILDWINDOW), @as(u32, @bitCast(WindowStyle{ .child = true })));
+    try testing.expectEqual(
+        @as(u32, WS.POPUP), @as(u32, @bitCast(WindowStyle{ .pop_up = true })));
+
+    try testing.expectEqual(
+        @as(u32, WS.OVERLAPPEDWINDOW), @as(u32, @bitCast(WindowStyle.overlapped_window)));
+    try testing.expectEqual(
+        @as(u32, WS.TILEDWINDOW), @as(u32, @bitCast(WindowStyle.overlapped_window)));
+    try testing.expectEqual(
+        @as(u32, WS.POPUPWINDOW), @as(u32, @bitCast(WindowStyle.pop_up_window)));
+}
+
 /// The `flags` field of `WINDOWPOS`.
 pub const SetWindowPosition = packed struct (UINT) {
     /// Retains the current size (ignores the `cx` and `cy` members).
@@ -1732,6 +1925,48 @@ pub const WM = struct {
     pub const XBUTTONDBLCLK = 0x020D;
     pub const XBUTTONDOWN = 0x020B;
     pub const XBUTTONUP = 0x020C;
+};
+
+pub const WS = struct {
+    pub const BORDER = 0x00800000;
+    pub const CAPTION = 0x00C00000;
+    pub const CHILD = 0x40000000;
+    pub const CHILDWINDOW = 0x40000000;
+    pub const CLIPCHILDREN = 0x02000000;
+    pub const CLIPSIBLINGS = 0x04000000;
+    pub const DISABLED = 0x08000000;
+    pub const DLGFRAME = 0x00400000;
+    pub const GROUP = 0x00020000;
+    pub const HSCROLL = 0x00100000;
+    pub const ICONIC = 0x20000000;
+    pub const MAXIMIZE = 0x01000000;
+    pub const MAXIMIZEBOX = 0x00010000;
+    pub const MINIMIZE = 0x20000000;
+    pub const MINIMIZEBOX = 0x00020000;
+    pub const OVERLAPPED = 0x00000000;
+    pub const OVERLAPPEDWINDOW =
+        OVERLAPPED |
+        CAPTION |
+        SYSMENU |
+        THICKFRAME |
+        MINIMIZEBOX |
+        MAXIMIZEBOX;
+    pub const POPUP = 0x80000000;
+    pub const POPUPWINDOW = POPUP | BORDER | SYSMENU;
+    pub const SIZEBOX = 0x00040000;
+    pub const SYSMENU = 0x00080000;
+    pub const TABSTOP = 0x00010000;
+    pub const THICKFRAME = 0x00040000;
+    pub const TILED = 0x00000000;
+    pub const TILEDWINDOW =
+        OVERLAPPED |
+        CAPTION |
+        SYSMENU |
+        THICKFRAME |
+        MINIMIZEBOX |
+        MAXIMIZEBOX;
+    pub const VISIBLE = 0x10000000;
+    pub const VSCROLL = 0x00200000;
 };
 
 /// HWND_* (conflicts with HWND)
