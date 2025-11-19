@@ -595,6 +595,53 @@ pub const Message = union {
             };
         }
     };
+
+    /// Posted to the window with the keyboard focus
+    /// when a nonsystem key is pressed.
+    /// A nonsystem key is a key that is pressed when the ALT key is not pressed.
+    pub const KeyDown = struct {
+        virtual: VirtualKey,
+        keystroke: Keystroke,
+
+        pub const message = WM.KEYDOWN;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) KeyDown {
+            assert(uMsg == message);
+            const w_byte: u8 = @truncate(wParam);
+            const l: usize = @bitCast(lParam);
+            const l_dword: u32 = @truncate(l);
+            return KeyDown{
+                .virtual = @enumFromInt(w_byte),
+                .keystroke = @bitCast(l_dword),
+            };
+        }
+    };
+
+    /// Posted to the window with the keyboard focus
+    /// when a nonsystem key is released.
+    /// A nonsystem key is a key that is pressed when the ALT key is not pressed,
+    /// or a keyboard key that is pressed when a window has the keyboard focus.
+    pub const KeyUp = struct {
+        virtual: VirtualKey,
+        keystroke: Keystroke,
+
+        pub const message = WM.KEYUP;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) KeyUp {
+            assert(uMsg == message);
+            const w_byte: u8 = @truncate(wParam);
+            const l: usize = @bitCast(lParam);
+            const l_dword: u32 = @truncate(l);
+            return KeyDown{
+                .virtual = @enumFromInt(w_byte),
+                .keystroke = @bitCast(l_dword),
+            };
+        }
+    };
 };
 
 pub const WindowsMessage = enum(u16) {
@@ -2252,6 +2299,264 @@ pub const WindowActivation = enum(WORD) {
     _,
 };
 
+pub const Keystroke = packed struct(u32) {
+    /// The repeat count for the current message.
+    /// The value is the number of times the keystroke is autorepeated
+    /// as a result of the user holding down the key.
+    /// If the keystroke is held long enough, multiple messages are sent.
+    /// However, the repeat count is not cumulative.
+    repeat: u16,
+    /// The scan code. The value depends on the OEM.
+    scancode: u8,
+    /// Whether the key is an extended key,
+    /// such as the right-hand ALT and CTRL keys
+    /// that appear on an enhanced 101- or 102-key keyboard.
+    extended: bool,
+    _reserved: u4 = 0,
+    // The context code.
+    // `0` for a KEYDOWN or KEYUP message.
+    context: u1,
+    /// For KEYDOWN, `true` only if the key was also down
+    /// before the message is sent (indicating a repeat).
+    /// For KEYUP, always `true`.
+    previously_down: bool,
+    /// The transition state.
+    /// `0` for a KEYDOWN message, and `1` for a KEYUP message.
+    transition: u1,
+};
+
+pub const VirtualKey = enum(u8) {
+    left_mouse_button = VK.LBUTTON,
+    reft_mouse_button = VK.RBUTTON,
+    /// Control-break processing
+    cancel = VK.CANCEL,
+    middle_mouse_button = VK.MBUTTON,
+    /// X1 mouse button
+    x_button_1 = VK.XBUTTON1,
+    /// X2 mouse button
+    x_button_2 = VK.XBUTTON2,
+    /// Backspace key
+    back = VK.BACK,
+    tab = VK.TAB,
+    clear = VK.CLEAR,
+    /// Enter key
+    @"return" = VK.RETURN,
+    shift = VK.SHIFT,
+    control = VK.CONTROl,
+    /// Alt key
+    menu = VK.MENU,
+    pause = VK.PAUSE,
+    /// Caps lock key
+    capital = VK.CAPITAL,
+    /// IME Kana/Hangul mode (same constant value)
+    kana_hangul = VK.KANA,
+    ime_on = VK.IME_ON,
+    /// IME Junja mode
+    junja = VK.JUNA,
+    /// IME final mode
+    final = VK.FINAL,
+    /// IME Hanja/Kanji mode (same constant value)
+    hanja_kanji = VK.HANJA,
+    ime_off = VK.IME_OFF,
+    escape = VK.ESCAPE,
+    /// IME convert
+    convert = VK.CONVERT,
+    /// IME nonconvert
+    nonconvert = VK.NONCONVERT,
+    /// IME accept
+    accept = VK.ACCEPT,
+    /// IME mode change request
+    mode_change = VK.MODECHANGE,
+    /// Spacebar key
+    space = VK.SPACE,
+    /// Page up key
+    prior = VK.PRIOR,
+    /// Page down key
+    next = VK.NEXT,
+    end = VK.END,
+    home = VK.HOME,
+    /// Left arrow key
+    left = VK.LEFT,
+    /// Up arrow key
+    up = VK.UP,
+    /// Right arrow key
+    right = VK.RIGHT,
+    /// Down arrow key
+    down = VK.DOWN,
+    select = VK.SELECT,
+    print = VK.PRINT,
+    execute = VK.EXECUTE,
+    snapshot = VK.SNAPSHOT,
+    insert = VK.INSERT,
+    delete = VK.INSERT,
+    help = VK.HELP,
+    @"0" = VK.@"0",
+    @"1" = VK.@"1",
+    @"2" = VK.@"2",
+    @"3" = VK.@"3",
+    @"4" = VK.@"4",
+    @"5" = VK.@"5",
+    @"6" = VK.@"6",
+    @"7" = VK.@"7",
+    @"8" = VK.@"8",
+    @"9" = VK.@"9",
+    a = VK.A,
+    b = VK.B,
+    c = VK.C,
+    d = VK.D,
+    e = VK.E,
+    f = VK.F,
+    g = VK.G,
+    h = VK.H,
+    i = VK.I,
+    j = VK.J,
+    k = VK.K,
+    l = VK.L,
+    m = VK.M,
+    n = VK.N,
+    o = VK.O,
+    p = VK.P,
+    q = VK.Q,
+    r = VK.R,
+    s = VK.S,
+    t = VK.T,
+    u = VK.U,
+    v = VK.V,
+    w = VK.W,
+    x = VK.X,
+    y = VK.Y,
+    z = VK.Z,
+    /// Left Windows logo key
+    left_windows = VK.LWIN,
+    /// Right Windows logo key
+    right_windows = VK.RWIN,
+    application = VK.APPS,
+    /// Computer sleep key
+    sleep = VK.SLEEP,
+    numpad_0 = VK.NUMPAD0,
+    numpad_1 = VK.NUMPAD1,
+    numpad_2 = VK.NUMPAD2,
+    numpad_3 = VK.NUMPAD3,
+    numpad_4 = VK.NUMPAD4,
+    numpad_5 = VK.NUMPAD5,
+    numpad_6 = VK.NUMPAD6,
+    numpad_7 = VK.NUMPAD7,
+    numpad_8 = VK.NUMPAD8,
+    numpad_9 = VK.NUMPAD9,
+    multiply = VK.MULTIPLY,
+    add = VK.ADD,
+    separator = VK.SEPARATOR,
+    subtract = VK.SUBTRACT,
+    decimal = VK.DECIMAL,
+    divide = VK.DIVIDE,
+    function_1 = VK.F1,
+    function_2 = VK.F2,
+    function_3 = VK.F3,
+    function_4 = VK.F4,
+    function_5 = VK.F5,
+    function_6 = VK.F6,
+    function_7 = VK.F7,
+    function_8 = VK.F8,
+    function_9 = VK.F9,
+    function_10 = VK.F10,
+    function_11 = VK.F11,
+    function_12 = VK.F12,
+    function_13 = VK.F13,
+    function_14 = VK.F14,
+    function_15 = VK.F15,
+    function_16 = VK.F16,
+    function_17 = VK.F17,
+    function_18 = VK.F18,
+    function_19 = VK.F19,
+    function_20 = VK.F20,
+    function_21 = VK.F21,
+    function_22 = VK.F22,
+    function_23 = VK.F23,
+    function_24 = VK.F24,
+    num_lock = VK.NUMLOCK,
+    scroll = VK.SCROLL,
+    left_shift = VK.LSHIFT,
+    right_shift = VK.RSHIFT,
+    left_control = VK.LCONTROL,
+    right_control = VK.RCONTROL,
+    /// Left Alt key
+    left_menu = VK.LMENU,
+    /// Right Alt key
+    right_menu = VK.RMENU,
+    browser_back = VK.BROWSER_BACK,
+    browser_forward = VK.BROWSER_FORWARD,
+    browser_refresh = VK.BROWSER_REFRESH,
+    browser_stop = VK.BROWSER_STOP,
+    browser_search = VK.BROWSER_SEARCH,
+    browser_favorites = VK.BROWSER_FAVORITES,
+    browser_home = VK.BROWSER_HOME,
+    volume_mute = VK.VOLUME_MUTE,
+    volume_down = VK.VOLUME_DOWN,
+    volume_up = VK.VOLUME_UP,
+    media_next_track = VK.MEDIA_NEXT_TRACK,
+    media_previous_track = VK.MEDIA_PREV_TRACK,
+    media_stop = VK.MEDIA_STOP,
+    media_play_pause = VK.MEDIA_PLAY_PAUSE,
+    launch_mail = VK.LAUNCH_MAIL,
+    launch_media_select = VK.MEDIA_SELECT,
+    launch_app_1 = VK.LAUNCH_APP1,
+    launch_app_2 = VK.LAUNCH_APP2,
+    oem_1 = VK.OEM_1,
+    oem_plus = VK.OEM_PLUS,
+    oem_comma = VK.OEM_COMMA,
+    oem_minus = VK.OEM_MINUS,
+    oem_period = VK.OEM_PERIOD,
+    oem_2 = VK.OEM_2,
+    oem_3 = VK.OEM_3,
+    gamepad_a = VK.GAMEPAD_A,
+    gamepad_b = VK.GAMEPAD_B,
+    gamepad_x = VK.GAMEPAD_X,
+    gamepad_y = VK.GAMEPAD_Y,
+    gamepad_right_shoulder = VK.GAMEPAD_RIGHT_SHOULDER,
+    gamepad_left_shoulder = VK.GAMEPAD_LEFT_SHOULDER,
+    gamepad_left_trigger = VK.GAMEPAD_LEFT_TRIGGER,
+    gamepad_right_trigger = VK.GAMEPAD_RIGHT_TRIGGER,
+    gamepad_dpad_up = VK.GAMEPAD_DPAD_UP,
+    gamepad_dpad_down = VK.GAMEPAD_DPAD_DOWN,
+    gamepad_dpad_left = VK.GAMEPAD_DPAD_LEFT,
+    gamepad_dpad_right = VK.GAMEPAD_DPAD_RIGHT,
+    gamepad_menu = VK.GAMEPAD_MENU,
+    gamepad_view = VK.GAMEPAD_VIEW,
+    gamepad_left_thumbstick_button = VK.GAMEPAD_LEFT_THUMBSTICK_BUTTON,
+    gamepad_right_thumbstick_button = VK.GAMEPAD_RIGHT_THUMBSTICK_BUTTON,
+    gamepad_left_thumbstick_up = VK.GAMEPAD_LEFT_THUMBSTICK_UP,
+    gamepad_left_thumbstick_down = VK.GAMEPAD_RIGHT_THUMBSTICK_DOWN,
+    gamepad_left_thumbstick_right = VK.GAMEPAD_LEFT_THUMBSTICK_RIGHT,
+    gamepad_left_thumbstick_left = VK.GAMEPAD_LEFT_THUMSTICK_LEFT,
+    gamepad_right_thumbstick_up = VK.GAMEPAD_RIGHT_THUMBSTICK_UP,
+    gamepad_right_thumbstick_down = VK.GAMEPAD_RIGHT_THUMBSTICK_DOWN,
+    gamepad_right_thumbstick_right = VK.GAMEPAD_RIGHT_THUMBSTICK_RIGHT,
+    gamepad_right_thumbstick_left = VK.GAMEPAD_RIGHT_THUMBSTICK_LEFT,
+    oem_4 = VK.OEM_4,
+    oem_5 = VK.OEM_5,
+    oem_6 = VK.OEM_6,
+    oem_7 = VK.OEM_7,
+    oem_8 = VK.OEM_8,
+    oem_102 = VK.OEM_102,
+    /// IME PROCESS key
+    process_key = VK.PROCESS_KEY,
+    /// Used to pass Unicode characters as if they were keystrokes.
+    /// This key is the low word of a 32-bit Virtual Key value
+    /// used for non-keyboard input methods.
+    packet = VK.PACKET,
+    attention = VK.ATTN,
+    cursor_select = VK.CRSEL,
+    extend_selection = VK.EXSEL,
+    erase_to_eof = VK.EREOF,
+    play = VK.PLAY,
+    zoom = VK.ZOOM,
+    /// Reserved
+    no_name = VK.NONAME,
+    pa_1 = VK.PA1,
+    oem_clear = VK.OEM_CLEAR,
+    _,
+};
+
 pub const MSG = extern struct {
     /// A handle to the window whose window procedure receives the message.
     /// This member is `null` when the message is a thread message.
@@ -2709,6 +3014,207 @@ pub const WA = struct {
     pub const ACTIVE = 1;
     pub const CLICKACTIVE = 2;
     pub const INACTIVE = 0;
+};
+
+pub const VK = struct {
+    pub const LBUTTON = 0x01;
+    pub const RBUTTON = 0x02;
+    pub const CANCEL = 0x03;
+    pub const MBUTTON = 0x04;
+    pub const XBUTTON1 = 0x05;
+    pub const XBUTTON2 = 0x06;
+    pub const BACK = 0x08;
+    pub const TAB = 0x09;
+    pub const CLEAR = 0x0C;
+    pub const RETURN = 0x0D;
+    pub const SHIFT = 0x10;
+    pub const CONTROL = 0x11;
+    pub const MENU = 0x12;
+    pub const PAUSE = 0x13;
+    pub const CAPITAL = 0x14;
+    pub const KANA = 0x15;
+    pub const HANGUL = 0x15;
+    pub const IME_ON = 0x16;
+    pub const JUNJA = 0x17;
+    pub const FINAL = 0x18;
+    pub const HANJA = 0x19;
+    pub const KANJI = 0x19;
+    pub const IME_OFF = 0x1A;
+    pub const ESCAPE = 0x1B;
+    pub const CONVERT = 0x1C;
+    pub const NONCONVERT = 0x1D;
+    pub const ACCEPT = 0x1E;
+    pub const MODECHANGE = 0x1F;
+    pub const SPACE = 0x20;
+    pub const PRIOR = 0x21;
+    pub const NEXT = 0x22;
+    pub const END = 0x23;
+    pub const HOME = 0x24;
+    pub const LEFT = 0x25;
+    pub const UP = 0x26;
+    pub const RIGHT = 0x27;
+    pub const DOWN = 0x28;
+    pub const SELECT = 0x29;
+    pub const PRINT = 0x2A;
+    pub const EXECUTE = 0x2B;
+    pub const SNAPSHOT = 0x2C;
+    pub const INSERT = 0x2D;
+    pub const DELETE = 0x2E;
+    pub const HELP = 0x2F;
+    pub const @"0" = 0x30;
+    pub const @"1" = 0x31;
+    pub const @"2" = 0x32;
+    pub const @"3" = 0x33;
+    pub const @"4" = 0x34;
+    pub const @"5" = 0x35;
+    pub const @"6" = 0x36;
+    pub const @"7" = 0x37;
+    pub const @"8" = 0x38;
+    pub const @"9" = 0x39;
+    pub const A = 0x41;
+    pub const B = 0x42;
+    pub const C = 0x43;
+    pub const D = 0x44;
+    pub const E = 0x45;
+    pub const F = 0x46;
+    pub const G = 0x47;
+    pub const H = 0x48;
+    pub const I = 0x49;
+    pub const J = 0x4A;
+    pub const K = 0x4B;
+    pub const L = 0x4C;
+    pub const M = 0x4D;
+    pub const N = 0x4E;
+    pub const O = 0x4F;
+    pub const P = 0x50;
+    pub const Q = 0x51;
+    pub const R = 0x52;
+    pub const S = 0x53;
+    pub const T = 0x54;
+    pub const U = 0x55;
+    pub const V = 0x56;
+    pub const W = 0x57;
+    pub const X = 0x58;
+    pub const Y = 0x59;
+    pub const Z = 0x5A;
+    pub const LWIN = 0x5B;
+    pub const RWIN = 0x5C;
+    pub const APPS = 0x5D;
+    pub const SLEEP = 0x5F;
+    pub const NUMPAD0 = 0x60;
+    pub const NUMPAD1 = 0x61;
+    pub const NUMPAD2 = 0x62;
+    pub const NUMPAD3 = 0x63;
+    pub const NUMPAD4 = 0x64;
+    pub const NUMPAD5 = 0x65;
+    pub const NUMPAD6 = 0x66;
+    pub const NUMPAD7 = 0x67;
+    pub const NUMPAD8 = 0x68;
+    pub const NUMPAD9 = 0x69;
+    pub const MULTIPLY = 0x6A;
+    pub const ADD = 0x6B;
+    pub const SEPARATOR = 0x6C;
+    pub const SUBTRACT = 0x6D;
+    pub const DECIMAL = 0x6E;
+    pub const DIVIDE = 0x6F;
+    pub const F1 = 0x70;
+    pub const F2 = 0x71;
+    pub const F3 = 0x72;
+    pub const F4 = 0x73;
+    pub const F5 = 0x74;
+    pub const F6 = 0x75;
+    pub const F7 = 0x76;
+    pub const F8 = 0x77;
+    pub const F9 = 0x78;
+    pub const F10 = 0x79;
+    pub const F11 = 0x7A;
+    pub const F12 = 0x7B;
+    pub const F13 = 0x7C;
+    pub const F14 = 0x7D;
+    pub const F15 = 0x7E;
+    pub const F16 = 0x7F;
+    pub const F17 = 0x80;
+    pub const F18 = 0x81;
+    pub const F19 = 0x82;
+    pub const F20 = 0x83;
+    pub const F21 = 0x84;
+    pub const F22 = 0x85;
+    pub const F23 = 0x86;
+    pub const F24 = 0x87;
+    pub const NUMLOCK = 0x90;
+    pub const SCROLL = 0x91;
+    pub const LSHIFT = 0xA0;
+    pub const RSHIFT = 0xA1;
+    pub const LCONTROL = 0xA2;
+    pub const RCONTROL = 0xA3;
+    pub const LMENU = 0xA4;
+    pub const RMENU = 0xA5;
+    pub const BROWSER_BACK = 0xA6;
+    pub const BROWSER_FORWARD = 0xA7;
+    pub const BROWSER_REFRESH = 0xA8;
+    pub const BROWSER_STOP = 0xA9;
+    pub const BROWSER_SEARCH = 0xAA;
+    pub const BROWSER_FAVORITES = 0xAB;
+    pub const BROWSER_HOME = 0xAC;
+    pub const VOLUME_MUTE = 0xAD;
+    pub const VOLUME_DOWN = 0xAE;
+    pub const VOLUME_UP = 0xAF;
+    pub const MEDIA_NEXT_TRACK = 0xB0;
+    pub const MEDIA_PREV_TRACK = 0xB1;
+    pub const MEDIA_STOP = 0xB2;
+    pub const MEDIA_PLAY_PAUSE = 0xB3;
+    pub const LAUNCH_MAIL = 0xB4;
+    pub const LAUNCH_MEDIA_SELECT = 0xB5;
+    pub const LAUNCH_APP1 = 0xB6;
+    pub const LAUNCH_APP2 = 0xB7;
+    pub const OEM_1 = 0xBA;
+    pub const OEM_PLUS = 0xBB;
+    pub const OEM_COMMA = 0xBC;
+    pub const OEM_MINUS = 0xBD;
+    pub const OEM_PERIOD = 0xBE;
+    pub const OEM_2 = 0xBF;
+    pub const OEM_3 = 0xC0;
+    pub const GAMEPAD_A = 0xC3;
+    pub const GAMEPAD_B = 0xC4;
+    pub const GAMEPAD_X = 0xC5;
+    pub const GAMEPAD_Y = 0xC6;
+    pub const GAMEPAD_RIGHT_SHOULDER = 0xC7;
+    pub const GAMEPAD_LEFT_SHOULDER = 0xC8;
+    pub const GAMEPAD_LEFT_TRIGGER = 0xC9;
+    pub const GAMEPAD_RIGHT_TRIGGER = 0xCA;
+    pub const GAMEPAD_DPAD_UP = 0xCB;
+    pub const GAMEPAD_DPAD_DOWN = 0xCC;
+    pub const GAMEPAD_DPAD_LEFT = 0xCD;
+    pub const GAMEPAD_DPAD_RIGHT = 0xCE;
+    pub const GAMEPAD_MENU = 0xCF;
+    pub const GAMEPAD_VIEW = 0xD0;
+    pub const GAMEPAD_LEFT_THUMBSTICK_BUTTON = 0xD1;
+    pub const GAMEPAD_RIGHT_THUMBSTICK_BUTTON = 0xD2;
+    pub const GAMEPAD_LEFT_THUMBSTICK_UP = 0xD3;
+    pub const GAMEPAD_LEFT_THUMBSTICK_DOWN = 0xD4;
+    pub const GAMEPAD_LEFT_THUMBSTICK_RIGHT = 0xD5;
+    pub const GAMEPAD_LEFT_THUMBSTICK_LEFT = 0xD6;
+    pub const GAMEPAD_RIGHT_THUMBSTICK_UP = 0xD7;
+    pub const GAMEPAD_RIGHT_THUMBSTICK_DOWN = 0xD8;
+    pub const GAMEPAD_RIGHT_THUMBSTICK_RIGHT = 0xD9;
+    pub const GAMEPAD_RIGHT_THUMBSTICK_LEFT = 0xDA;
+    pub const OEM_4 = 0xDB;
+    pub const OEM_5 = 0xDC;
+    pub const OEM_6 = 0xDD;
+    pub const OEM_7 = 0xDE;
+    pub const OEM_8 = 0xDF;
+    pub const OEM_102 = 0xE2;
+    pub const PROCESSKEY = 0xE5;
+    pub const PACKET = 0xE7;
+    pub const ATTN = 0xF6;
+    pub const CRSEL = 0xF7;
+    pub const EXSEL = 0xF8;
+    pub const EREOF = 0xF9;
+    pub const PLAY = 0xFA;
+    pub const ZOOM = 0xFB;
+    pub const NONAME = 0xFC;
+    pub const PA1 = 0xFD;
+    pub const OEM_CLEAR = 0xFE;
 };
 
 // Assumed in some field types of message parse structs
