@@ -1479,7 +1479,7 @@ pub const WindowsMessage = enum(u16) {
     _,
 };
 
-pub const WindowClassStyle = packed struct (UINT) {
+pub const WindowClassStyle = packed struct(UINT) {
     /// Redraws the entire window
     /// if a movement or size adjustment changes the height of the client area.
     vertical_redraw: bool = false,
@@ -1590,7 +1590,7 @@ test WindowClassStyle {
         @as(UINT, CS.DROPSHADOW), @as(UINT, @bitCast(WindowClassStyle{ .drop_shadow = true })));
 }
 
-pub const WindowStyle = packed struct (u32) {
+pub const WindowStyle = packed struct(u32) {
     _padding: u16 = 0,
     /// The window is a control
     /// that can receive the keyboard focus when the user presses the TAB key,
@@ -1643,7 +1643,7 @@ pub const WindowStyle = packed struct (u32) {
     /// This style cannot be used with the `.child` style.
     pop_up: bool = false,
 
-    pub const Frame = enum (u2) {
+    pub const Frame = enum(u2) {
         none = 0b00,
         /// The window has a border of a style typically used with dialog boxes.
         dialog = 0b01,
@@ -1734,7 +1734,7 @@ test WindowStyle {
         @as(u32, WS.POPUPWINDOW), @as(u32, @bitCast(WindowStyle.pop_up_window)));
 }
 
-pub const WindowStyleExtended = packed struct (u32) {
+pub const WindowStyleExtended = packed struct(u32) {
     /// The window has a double border;
     /// the window can, optionally, be created with a title bar
     /// by specifying the `.caption` style in the style parameter.
@@ -1958,7 +1958,7 @@ pub const ShowStatus = enum (LPARAM) {
 
 
 /// The `flags` field of `WINDOWPOS`.
-pub const SetWindowPosition = packed struct (UINT) {
+pub const SetWindowPosition = packed struct(UINT) {
     /// Retains the current size (ignores the `cx` and `cy` members).
     no_size: bool = false,
     /// Retains the current position (ignores the `x` and `y` members).
