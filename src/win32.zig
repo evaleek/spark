@@ -13,19 +13,25 @@ pub const LWords = packed struct (LPARAM) {
 pub const Message = union {
 
     /// Sent to a window whose size, position, or place in the Z-order
-    /// has changed as a result of a call to the `SetWindowPos` function
+    /// is about to change (for `*CHANGING`) or has changed (for `*CHANGED`)
+    /// as a result of a call to the `SetWindowPos` function
     /// or another window management function.
     ///
-    /// Calling `DefWindowProc` on this message
+    /// Calling `DefWindowProc` on `WM_WINDOWPOSCHANGED`
     /// sends the `Size` and `Move` messages to the window,
     /// and they are not sent if an application handles this message
     /// without calling `DefWindowProc`.
     ///
     /// It is more efficient to perform any move or size change processing
-    /// during this message without calling `DefWindowProc`.
-    pub const WindowPositionChanged = struct {
+    /// during `WM_WINDOWPOSCHANGED` without calling `DefWindowProc`.
+    pub const WindowPositionChange = extern struct {
         /// The `hwnd` listed in this event's inner struct.
         window: HWND,
+        /// The position of the window in Z order (front-to-back position).
+        /// This member can be a handle to
+        /// the window behind which this window is placed,
+        /// or can be a special value.
+        z: Z,
         /// The new position of the left edge of the window.
         x: c_int,
         /// The new position of the top edge of the window.
@@ -34,42 +40,81 @@ pub const Message = union {
         width: c_int,
         /// The new window height, in pixels.
         height: c_int,
-        /// The position of the window in Z order (front-to-back position).
-        /// This member can be a handle to
-        /// the window behind which this window is placed,
-        /// or can be a special value.
-        z: Z,
         flags: SetWindowPosition,
 
-        pub const message = WM.WINDOWPOSCHANGED;
-        /// If an application processes this message, it should return this value.
+        /// If an application processes either
+        /// `WM_WINDOWPOSCHANGING` or `WM_WINDOWPOSCHANGED`,
+        /// it should return this value.
         pub const processed: LRESULT = 0;
 
-        pub const Z = union(enum) {
-            /// A special bottom/top value
-            order: WindowInsertAfter,
-            /// The handle of the window behind which this window is stacked
-            after: HWND,
+        pub const Z = packed union {
+            order: packed struct {
+                placement: WindowSpecialZ,
+                _padding: @Type(.{ .int = .{
+                    .signedness = .unsigned,
+                    .bits = @bitSizeOf(HWND) - @bitSizeOf(WindowSpecialZ),
+                }}) = 0,
+            },
+            window: HWND,
+
+            pub const OrderOrWindow = enum { order, window };
+
+            pub fn which(z: Z) OrderOrWindow {
+                return if (std.math.cast(@typeInfo(WindowSpecialZ).tag_type,
+                        @as(HWND, @bitCast(z)))) |_| .order
+                    else .window;
+            }
+
+            pub fn fromSpecial(special: WindowSpecialZ) Z {
+                return .{ .order = .{ .placement = special }};
+            }
+
+            pub fn fromAfter(after: HWND) Z {
+                return .{ .after = after };
+            }
         };
 
-        /// The parameters used to parse this message
-        /// are a reference to Windows-owned data
-        /// received within the `WindowProc` function.
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) WindowPositionChanged {
-            assert(uMsg == message);
+        /// An application receives this struct during the CHANGED event
+        /// and may use it to update internal window state.
+        ///
+        /// It is more efficient to perform any move or size change processing
+        /// during `WM_WINDOWPOSCHANGED` without calling `DefWindowProc`.
+        ///
+        /// This reference is owned by Windows and cannot be freed,
+        /// and should only be considered valid within the WndProc.
+        pub fn fromParamsChanged(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) *const WindowPositionChange {
+            assert(uMsg == WM.WINDOWPOSCHANGED);
             _ = wParam;
-            const l: *const WINDOWPOS = @ptrFromInt(lParam);
-            return WindowPositionChanged{
-                .x = l.x,
-                .y = l.y,
-                .width = l.cx,
-                .height = l.cy,
-                .z = if (std.enums.fromInt(WindowInsertAfter, l.hwndInsertAfter))
-                    |order| Z{ .order = order } else Z{ .after = l.hwndInsertAfter },
-                .flags = @bitCast(l.flags),
-            };
+            return @ptrFromInt(lParam);
+        }
+
+        /// An application may modify this struct during the CHANGING event
+        /// to affect the window's new size, position, or Z order,
+        /// and set or clear appropriate bits of the `.flags` field.
+        ///
+        /// Changes to some SetWindowPosition flags,
+        /// including `.no_activate` and `.no_owner_z_order`,
+        /// are ignored when modified during this event.
+        ///
+        /// This reference is owned by Windows and cannot be freed,
+        /// and should only be considered valid within the WndProc.
+        pub fn fromParamsChanging(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) *WindowPositionChange {
+            assert(uMsg == WM.WINDOWPOSCHANGING);
+            _ = wParam;
+            return @ptrFromInt(lParam);
         }
     };
+    comptime {
+        assert(@sizeOf(WindowPositionChange) == @sizeOf(WINDOWPOS));
+        assert(@alignOf(WindowPositionChange) == @alignOf(WINDOWPOS));
+        for (
+            @typeInfo(WindowPositionChange).@"struct".fields,
+            @typeInfo(WINDOWPOS).@"struct".fields,
+        ) |field_a, field_b| {
+            assert(@sizeOf(field_a.type) == @sizeOf(field_b.type));
+            assert(field_a.alignment == field_b.alignment);
+        }
+    }
 
     /// Sent after a window has been moved.
     pub const Move = struct {
@@ -1287,7 +1332,7 @@ test SetWindowPosition {
 /// These values may appear in the `hwndInsertAfter` field of `WINDOWPOS`
 /// instead of a handle to the window
 /// that the recepient window is stacked above.
-pub const WindowInsertAfter = enum (i2) {
+pub const WindowSpecialZ = enum (i2) {
     /// Places the window at the bottom of the Z order.
     /// If the `hWnd` parameter identifies a topmost window,
     /// the window loses its topmost status
