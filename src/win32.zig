@@ -609,13 +609,8 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) KeyDown {
             assert(uMsg == message);
-            const w_byte: u8 = @truncate(wParam);
-            const l: usize = @bitCast(lParam);
-            const l_dword: u32 = @truncate(l);
-            return KeyDown{
-                .virtual = @enumFromInt(w_byte),
-                .keystroke = @bitCast(l_dword),
-            };
+            const v, const s = parseKeyMessage(wParam, lParam);
+            return KeyDown{ .virtual = v, .keystroke = s };
         }
     };
 
@@ -633,13 +628,55 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) KeyUp {
             assert(uMsg == message);
-            const w_byte: u8 = @truncate(wParam);
-            const l: usize = @bitCast(lParam);
-            const l_dword: u32 = @truncate(l);
-            return KeyDown{
-                .virtual = @enumFromInt(w_byte),
-                .keystroke = @bitCast(l_dword),
-            };
+            const v, const s = parseKeyMessage(wParam, lParam);
+            return KeyUp{ .virtual = v, .keystroke = s };
+        }
+    };
+
+    /// Posted to the window with the keyboard focus
+    /// when the user presses the F10 key
+    /// (which activates the menu bar)
+    /// or holds down the ALT key and then presses another key.
+    /// It also occurs when no window currently has the keyboard focus;
+    /// in this case, the this message is sent to the active window.
+    /// The window that receives the message
+    /// can distinguish between these two contexts
+    /// by checking the `.context` code of `.keystroke`.
+    pub const SystemKeyDown = struct {
+        virtual: VirtualKey,
+        keystroke: Keystroke,
+
+        pub const message = WM.SYSKEYDOWN;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) SystemKeyDown {
+            assert(uMsg == message);
+            const v, const s = parseKeyMessage(wParam, lParam);
+            return SystemKeyDown{ .virtual = v, .keystroke = s };
+        }
+    };
+
+    /// Posted to the window with the keyboard focus
+    /// when the user releases a key that was pressed
+    /// while the ALT key was held down.
+    /// It also occurs when no window currently has the keyboard focus;
+    /// in this case, this message is sent to the active window.
+    /// The window that receives the message
+    /// can distinguish between these two contexts
+    /// by checking the `.context` code of `.keystroke`.
+    pub const SystemKeyUp = struct {
+        virtual: VirtualKey,
+        keystroke: Keystroke,
+
+        pub const message = WM.SYSKEYUP;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) SystemKeyUp {
+            assert(uMsg == message);
+            const v, const s = parseKeyMessage(wParam, lParam);
+            return SystemKeyUp{ .virtual = v, .keystroke = s };
         }
     };
 };
@@ -2314,14 +2351,16 @@ pub const Keystroke = packed struct(u32) {
     extended: bool,
     _reserved: u4 = 0,
     // The context code.
-    // `0` for a KEYDOWN or KEYUP message.
-    context: u1,
+    // `false` for KEYDOWN or KEYUP messages.
+    // For SYSKEYDOWN or SYSKEYUP, `true` only if the ALT key was down
+    // when the key was pressed/released.
+    context: bool,
     /// For KEYDOWN, `true` only if the key was also down
     /// before the message is sent (indicating a repeat).
     /// For KEYUP, always `true`.
     previously_down: bool,
     /// The transition state.
-    /// `0` for a KEYDOWN message, and `1` for a KEYUP message.
+    /// `0` for a *KEYDOWN message, and `1` for a *KEYUP message.
     transition: u1,
 };
 
@@ -2556,6 +2595,13 @@ pub const VirtualKey = enum(u8) {
     oem_clear = VK.OEM_CLEAR,
     _,
 };
+
+pub fn parseKeyMessage(w: WPARAM, l: LPARAM) struct { VirtualKey, Keystroke } {
+    const w_byte: u8 = @truncate(w);
+    const l_unsigned: usize = @bitCast(l);
+    const l_dword: u32 = @truncate(l_unsigned);
+    return .{ @enumFromInt(w_byte), @bitCast(l_dword) };
+}
 
 pub const MSG = extern struct {
     /// A handle to the window whose window procedure receives the message.
