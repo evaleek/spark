@@ -556,6 +556,45 @@ pub const Message = union {
             };
         }
     };
+
+    /// Sent to a window when its nonclient area needs to be changed
+    /// to indicate an active or inactive state.
+    ///
+    /// A window receives this message through its `WindowProc` function.
+    ///
+    /// If `active` is `false`,
+    /// the application should return `TRUE` (`1`)
+    /// to indicate that the system should proceed with the default processing,
+    /// or it should return `FALSE` to prevent the change.
+    /// When `active` is true, the return value is ignored.
+    pub const NonclientActivate = struct {
+        /// Indicates when a title bar or icon needs to be changed
+        /// to indicate an active or inactive state.
+        /// `true` if an active title bar or icon is to be drawn, and
+        /// `false` if an inactive title bar or icon is to be drawn.
+        active: bool,
+        /// Whether `DefWindowProc`
+        /// will repaint the nonclient area to reflect the state change.
+        repaint: bool,
+        /// `null` if not repainting the nonclient area to reflect stage change,
+        /// or if the previous/next window is from another application.
+        /// Otherwise, a handle to the window that will next be activated,
+        /// if `active` is `false`,
+        /// or a handle to the previously active window,
+        /// if `active` is `true`.
+        other: ?HWND,
+
+        pub const message = WM.NCACTIVATE;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) NonclientActivate {
+            assert(uMsg == message);
+            return NonclientActivate{
+                .active = wParam!=0,
+                .repaint = lParam==-1,
+                .other = if (lParam > 0) @ptrFromInt(lParam) else null,
+            };
+        }
+    };
 };
 
 pub const WindowsMessage = enum(u16) {
@@ -2675,6 +2714,8 @@ pub const WA = struct {
 // Assumed in some field types of message parse structs
 comptime { assert(@bitSizeOf(WORD) == 16); }
 
+pub const FALSE = 0;
+pub const TRUE = 1;
 pub const ATOM = windows.ATOM;
 pub const UINT = windows.UINT;
 pub const LONG = windows.LONG;
