@@ -1481,6 +1481,39 @@ pub const WINDOWPOS = extern struct {
     flags: UINT,
 };
 
+const StringOrAtom = packed union {
+    string: [*:0]const WCHAR,
+    atom: packed struct {
+        word: WORD,
+        _high: @Type(.{ .int = .{
+            .signedness = .unsigned,
+            .bits = @bitSizeOf(LPCWSTR) - @bitSizeOf(WORD),
+        }}) = 0,
+    },
+
+    pub fn which(string_or_atom: StringOrAtom) enum { string, atom } {
+        const raw: usize = @bitCast(string_or_atom);
+        return if (raw <= std.math.maxInt(WORD)) .atom else .string;
+    }
+
+    pub fn fromAtom(atom: ATOM) StringOrAtom {
+        return .{ .atom = .{ .word = atom }};
+    }
+};
+comptime { assert(ATOM == WORD); }
+comptime { assert(@bitSizeOf(WORD) == 16); }
+comptime { assert(@bitSizeOf(StringOrAtom) == @bitSizeOf(LPCWSTR)); }
+test StringOrAtom {
+    const atom: ATOM = 0x63;
+    const as_macro: usize = @intFromPtr(MAKEINTATOM(atom));
+    const as_union: usize = @bitCast(StringOrAtom.fromAtom(atom));
+    try testing.expectEqual(as_macro, as_union);
+}
+
+fn MAKEINTATOM(atom: ATOM) ?[*:0]const align(1) u16 {
+    return @ptrFromInt(@as(u16, @intCast(atom)));
+}
+
 /// Windows message values appearing in the low word of the `MSG.message` identifier
 pub const WM = struct {
     pub const ACTIVATE = 0x6;
@@ -1735,13 +1768,23 @@ pub const SIZE = struct {
     pub const RESTORED = 0;
 };
 
+// Assumed in some field types of message parse structs
+comptime { assert(@bitSizeOf(WORD) == 16); }
+
+pub const ATOM = windows.ATOM;
 pub const UINT = windows.UINT;
+pub const LONG = windows.LONG;
+pub const WCHAR = windows.WCHAR;
 pub const WORD = windows.WORD;
 pub const DWORD = windows.DWORD;
 pub const WPARAM = windows.WPARAM;
 pub const LPARAM = windows.LPARAM;
 pub const LRESULT = windows.LRESULT;
+pub const HINSTANCE = windows.HINSTANCE;
 pub const HWND = windows.HWND;
+pub const HMENU = windows.HMENU;
+pub const LPVOID = windows.LPVOID;
+pub const LPCWSTR = windows.LPCWSTR;
 pub const POINT = windows.POINT;
 pub const RECT = windows.RECT;
 
