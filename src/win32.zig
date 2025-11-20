@@ -638,7 +638,7 @@ pub const Message = union {
     /// (which activates the menu bar)
     /// or holds down the ALT key and then presses another key.
     /// It also occurs when no window currently has the keyboard focus;
-    /// in this case, the this message is sent to the active window.
+    /// in this case, this message is sent to the active window.
     /// The window that receives the message
     /// can distinguish between these two contexts
     /// by checking the `.context` code of `.keystroke`.
@@ -677,6 +677,46 @@ pub const Message = union {
             assert(uMsg == message);
             const v, const s = parseKeyMessage(wParam, lParam);
             return SystemKeyUp{ .virtual = v, .keystroke = s };
+        }
+    };
+
+    /// Posted to the window with the keyboard focus
+    /// when a KEYDOWN message is translated by the `TranslateMessage` function.
+    /// This message contains the character code of the key that was pressed.
+    ///
+    /// Assumes that the window class was registered with the Unicode version
+    /// (`RegisterClassExW`), which specifies UTF-16 code units.
+    ///
+    /// In Window Vista or higher, this event may receive UTF-16 surrogate pairs.
+    pub const Character = struct {
+        /// A single UTF-16 codepoint as translated by Windows
+        /// through the `TranslateMessage` function.
+        ///
+        /// In modern versions of Windows,
+        /// Character events may pass UTF-16 surrogate pairs:
+        /// this value may be a high surrogate UTF-16 code point, in which case
+        /// the next event would be its corresponding low surrogate
+        /// for well-formed input.
+        codepoint: u16,
+        /// There is not necessarily a one-to-one correspondence
+        /// between keypress events and character messages,
+        /// and so information in the high word of `keystroke`
+        /// is not generally useful to applications.
+        keystroke: Keystroke,
+
+        pub const message = WM.CHAR;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Character {
+            assert(uMsg == message);
+            const w: WWords = @bitCast(wParam);
+            const l_unsigned: usize = @bitCast(lParam);
+            const l_dword: u32 = @truncate(l_unsigned);
+            return Character{
+                .codepoint = w.low,
+                .keystroke = @bitCast(l_dword),
+            };
         }
     };
 };
