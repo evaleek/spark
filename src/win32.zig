@@ -681,7 +681,7 @@ pub const Message = union {
     };
 
     /// Posted to the window with the keyboard focus
-    /// when a KEYDOWN message is translated by the `TranslateMessage` function.
+    /// when a key message is translated by the `TranslateMessage` function.
     /// This message contains the character code of the key that was pressed.
     ///
     /// Assumes that the window class was registered with the Unicode version
@@ -704,12 +704,16 @@ pub const Message = union {
         /// is not generally useful to applications.
         keystroke: Keystroke,
 
-        pub const message = WM.CHAR;
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Character {
-            assert(uMsg == message);
+            assert(
+                uMsg == WM.CHAR or
+                uMsg == WM.DEADCHAR or
+                uMsg == WM.SYSCHAR or
+                uMsg == WM.SYSDEADCHAR
+            );
             const w: WWords = @bitCast(wParam);
             const l_unsigned: usize = @bitCast(lParam);
             const l_dword: u32 = @truncate(l_unsigned);
