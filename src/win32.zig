@@ -727,59 +727,7 @@ pub const Message = union {
         }
     };
 
-    // TODO IME events here (WM_STARTCOMPOSITION, WM_COMPOSITION, ...)
-
-    /// Posted to a window when the cursor moves.
-    /// If the mouse is not captured,
-    /// the message is posted to the window that contains the cursor.
-    /// Otherwise, the message is posted
-    /// to the window that has captured the mouse.
-    ///
-    /// A window receives this message through its `WindowProc` function.
-    pub const MouseMove = struct {
-        /// Indicates whether various virtual keys are down.
-        state: MouseKey,
-        /// The x-coordinate of the cursor,
-        /// relative to the upper-left corner of the client area.
-        /// This value can be negative on systems with multiple monitors.
-        x: i16,
-        /// The y-coordinate of the cursor,
-        /// relative to the upper-left corner of the client area.
-        /// This value can be negative on systems with multiple monitors.
-        y: i16,
-
-        pub const message = WM.MOUSEMOVE;
-        /// If an application processes this message, it should return this value.
-        pub const processed: LRESULT = 0;
-
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) MouseMove {
-            assert(uMsg == message);
-            const w: WWords = @bitCast(wParam);
-            const l: LWords = @bitCast(lParam);
-            return MouseMove{
-                .state = @bitCast(w.low),
-                .x = @bitCast(l.low),
-                .y = @bitCast(l.high),
-            };
-        }
-    };
-
-    /// Posted to a window
-    /// when the cursor leaves the client area of the window
-    /// specified in a prior call to `TrackMouseEvent`.
-    ///
-    /// A window receives this message through its `WindowProc` function.
-    ///
-    /// All tracking requested by `TrackMouseEvent`
-    /// is canceled when this message is generated.
-    /// The application must call `TrackMouseEvent`
-    /// when the mouse reenters its window
-    /// if it requires further tracking of mouse hover behavior.
-    pub const MouseLeave = struct {
-        pub const message = WM.MOUSELEAVE;
-        /// If an application processes this message, it should return this value.
-        pub const processed: LRESULT = 0;
-    };
+    // TODO IME messages here (WM_STARTCOMPOSITION, WM_COMPOSITION, ...)
 
     /// Sent to the window that is losing the mouse capture.
     ///
@@ -800,11 +748,140 @@ pub const Message = union {
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) MouseMove {
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) CaptureChanged {
             assert(uMsg == message);
             _ = wParam;
-            return MouseMove{
+            return CaptureChanged{
                 .gained = @ptrFromInt(@as(usize, @bitCast(lParam))),
+            };
+        }
+    };
+
+    /// Posted to a window
+    /// when the cursor leaves the client area of the window
+    /// specified in a prior call to `TrackMouseEvent`.
+    ///
+    /// A window receives this message through its `WindowProc` function.
+    ///
+    /// All tracking requested by `TrackMouseEvent`
+    /// is canceled when this message is generated.
+    /// The application must call `TrackMouseEvent`
+    /// when the mouse reenters its window
+    /// if it requires further tracking of mouse hover behavior.
+    pub const MouseLeave = struct {
+        pub const message = WM.MOUSELEAVE;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        // `WM_MOUSELEAVE` passes no information in its parameters.
+    };
+
+    /// For `WM.MOUSEMOVE`:
+    /// Posted to a window when the cursor moves.
+    ///
+    /// For mouse button messages:
+    /// Posted when the user presses or releases the corresponding mouse button
+    /// while the cursor is in the client area of a window.
+    ///
+    /// If the mouse is not captured,
+    /// the message is posted to the window that contains the cursor.
+    /// Otherwise, the message is posted
+    /// to the window that has captured the mouse.
+    ///
+    /// Windows must have the `double_clicks` style to receive double clicks.
+    ///
+    /// A window receives these messages through its `WindowProc` function.
+    pub const Mouse = struct {
+        /// Indicates whether various virtual keys are down.
+        state: MouseKey,
+        /// The x-coordinate of the cursor,
+        /// relative to the upper-left corner of the client area.
+        /// This value can be negative on systems with multiple monitors.
+        x: i16,
+        /// The y-coordinate of the cursor,
+        /// relative to the upper-left corner of the client area.
+        /// This value can be negative on systems with multiple monitors.
+        y: i16,
+
+        /// If an application processes any Mouse message
+        /// other than an X button message,
+        /// it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Mouse {
+            assert(
+                uMsg == WM.MOUSEMOVE or
+                uMsg == WM.LBUTTONDOWN or
+                uMsg == WM.LBUTTONUP or
+                uMsg == WM.LBUTTONDBLCLK or
+                uMsg == WM.MBUTTONDOWN or
+                uMsg == WM.MBUTTONUP or
+                uMsg == WM.MBUTTONDBLCLK or
+                uMsg == WM.RBUTTONDOWN or
+                uMsg == WM.RBUTTONUP or
+                uMsg == WM.RBUTTONDBLCLK or
+                uMsg == WM.XBUTTONDOWN or
+                uMsg == WM.XBUTTONUP or
+                uMsg == WM.XBUTTONDBLCLK
+            );
+            const w: WWords = @bitCast(wParam);
+            const l: LWords = @bitCast(lParam);
+            return Mouse{
+                .state = @bitCast(w.low),
+                .x = @bitCast(l.low),
+                .y = @bitCast(l.high),
+            };
+        }
+    };
+
+    /// The mouse X button messages additionally encode
+    /// which X button (1 or 2) was pressed/released/double-clicked
+    /// in `wParam`.
+    /// `MouseXButton` returns this value,
+    /// but it is still valid to parse a mouse X button message
+    /// with the base `Mouse.fromParams`,
+    /// (although the `WindowProc` should still return `MouseXButton.processed`)
+    /// in which case the extra value will be ignored.
+    pub const MouseXButton = struct {
+        /// Indicates whether various virtual keys are down.
+        state: MouseKey,
+        /// The x-coordinate of the cursor,
+        /// relative to the upper-left corner of the client area.
+        /// This value can be negative on systems with multiple monitors.
+        x: i16,
+        /// The y-coordinate of the cursor,
+        /// relative to the upper-left corner of the client area.
+        /// This value can be negative on systems with multiple monitors.
+        y: i16,
+        button: Button,
+
+        pub const Button = enum (WORD) {
+            @"1" = 0x0001,
+            @"2" = 0x0002,
+            _,
+        };
+
+        /// If an application processes a mouse X button message,
+        /// it should return `TRUE`.
+        /// Doing so allows software that simulates this message
+        /// on Windows systems earlier than Windows 2000
+        /// to determine whether the window procedure processed the message
+        /// or called `DefWindowProc` to process it.
+        pub const processed: LRESULT = TRUE;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) MouseXButton {
+            assert(
+                uMsg == WM.XBUTTONDOWN or
+                uMsg == WM.XBUTTONUP or
+                uMsg == WM.XBUTTONDBLCLK
+            );
+            const w: WWords = @bitCast(wParam);
+            const l: LWords = @bitCast(lParam);
+            return MouseXButton{
+                .state = @bitCast(w.low),
+                .x = @bitCast(l.low),
+                .y = @bitCast(l.high),
+                .button = @enumFromInt(w.high),
             };
         }
     };
