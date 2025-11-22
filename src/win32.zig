@@ -596,21 +596,40 @@ pub const Message = union {
         }
     };
 
+    /// The data returned by all key events.
+    /// Its meaning varies slightly depending on the value of `uMsg`.
+    pub const Key = struct {
+        virtual: VirtualKey,
+        keystroke: Keystroke,
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Key {
+            assert(
+                uMsg == WM.KEYDOWN or
+                uMsg == WM.KEYUP or
+                uMsg == WM.SYSKEYDOWN or
+                uMsg == WM.SYSKEYUP
+            );
+            const w: u8 = @truncate(wParam);
+            const l: usize = @bitCast(lParam);
+            const l_dword: u32 = @truncate(l);
+            return Key{
+                .virtual = @enumFromInt(w),
+                .keystroke = @bitCast(l_dword),
+            };
+        }
+    };
+
     /// Posted to the window with the keyboard focus
     /// when a nonsystem key is pressed.
     /// A nonsystem key is a key that is pressed when the ALT key is not pressed.
     pub const KeyDown = struct {
-        virtual: VirtualKey,
-        keystroke: Keystroke,
-
         pub const message = WM.KEYDOWN;
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) KeyDown {
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Key {
             assert(uMsg == message);
-            const v, const s = parseKeyMessage(wParam, lParam);
-            return KeyDown{ .virtual = v, .keystroke = s };
+            return Key.fromParams(uMsg, wParam, lParam);
         }
     };
 
@@ -619,17 +638,13 @@ pub const Message = union {
     /// A nonsystem key is a key that is pressed when the ALT key is not pressed,
     /// or a keyboard key that is pressed when a window has the keyboard focus.
     pub const KeyUp = struct {
-        virtual: VirtualKey,
-        keystroke: Keystroke,
-
         pub const message = WM.KEYUP;
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) KeyUp {
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Key {
             assert(uMsg == message);
-            const v, const s = parseKeyMessage(wParam, lParam);
-            return KeyUp{ .virtual = v, .keystroke = s };
+            return Key.fromParams(uMsg, wParam, lParam);
         }
     };
 
@@ -643,17 +658,13 @@ pub const Message = union {
     /// can distinguish between these two contexts
     /// by checking the `.context` code of `.keystroke`.
     pub const SystemKeyDown = struct {
-        virtual: VirtualKey,
-        keystroke: Keystroke,
-
         pub const message = WM.SYSKEYDOWN;
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) SystemKeyDown {
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Key {
             assert(uMsg == message);
-            const v, const s = parseKeyMessage(wParam, lParam);
-            return SystemKeyDown{ .virtual = v, .keystroke = s };
+            return Key.fromParams(uMsg, wParam, lParam);
         }
     };
 
@@ -666,17 +677,13 @@ pub const Message = union {
     /// can distinguish between these two contexts
     /// by checking the `.context` code of `.keystroke`.
     pub const SystemKeyUp = struct {
-        virtual: VirtualKey,
-        keystroke: Keystroke,
-
         pub const message = WM.SYSKEYUP;
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) SystemKeyUp {
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Key {
             assert(uMsg == message);
-            const v, const s = parseKeyMessage(wParam, lParam);
-            return SystemKeyUp{ .virtual = v, .keystroke = s };
+            return Key.fromParams(uMsg, wParam, lParam);
         }
     };
 
@@ -2639,13 +2646,6 @@ pub const VirtualKey = enum(u8) {
     oem_clear = VK.OEM_CLEAR,
     _,
 };
-
-pub fn parseKeyMessage(w: WPARAM, l: LPARAM) struct { VirtualKey, Keystroke } {
-    const w_byte: u8 = @truncate(w);
-    const l_unsigned: usize = @bitCast(l);
-    const l_dword: u32 = @truncate(l_unsigned);
-    return .{ @enumFromInt(w_byte), @bitCast(l_dword) };
-}
 
 pub const MSG = extern struct {
     /// A handle to the window whose window procedure receives the message.
