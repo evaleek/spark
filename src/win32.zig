@@ -885,6 +885,48 @@ pub const Message = union {
             };
         }
     };
+
+    /// Sent to the focus window
+    /// when the mouse wheel or horizontal mouse wheel is rotated.
+    /// The `DefWindowProc` function propagates the message to the window's parent.
+    /// There should be no internal forwarding of the message,
+    /// since `DefWindowProc` propagates it up the parent chain
+    /// until it finds a window that processes it.
+    ///
+    /// A window receives this message through its `WindowProc` function.
+    pub const MouseWheel = struct {
+        /// The distance the wheel is rotated,
+        /// expressed in multiples of `WHEEL_DELTA`, which is `120`.
+        /// A positive value indicates that the wheel was rotated forward,
+        /// away from the user, or to the right;
+        /// a negative value indicates that the wheel was rotated backward,
+        /// toward the user, or to the left.
+        rotation: i16,
+        state: MouseKey,
+        /// The x-coordinate of the cursor,
+        /// relative to the upper-left corner of the client area.
+        /// This value can be negative on systems with multiple monitors.
+        x: i16,
+        /// The y-coordinate of the cursor,
+        /// relative to the upper-left corner of the client area.
+        /// This value can be negative on systems with multiple monitors.
+        y: i16,
+
+        /// If an application processes this message, it should return this value.
+        pub const processed: LPARAM = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) MouseWheel {
+            assert(uMsg == WM.MOUSEWHEEL or uMsg == WM.MOUSEHWHEEL);
+            const w: WWords = @bitCast(wParam);
+            const l: LWords = @bitCast(lParam);
+            return MouseWheel{
+                .rotation = @bitCast(w.high),
+                .state = @bitCast(w.low),
+                .x = @bitCast(l.low),
+                .y = @bitCast(l.high),
+            };
+        }
+    };
 };
 
 pub const WindowsMessage = enum(u16) {
@@ -3547,6 +3589,8 @@ pub const MK = struct {
     pub const XBUTTON1 = 0x0020;
     pub const XBUTTON2 = 0x0040;
 };
+
+pub const WHEEL_DELTA = 120;
 
 // Assumed in some field types of message parse structs
 comptime { assert(@bitSizeOf(WORD) == 16); }
