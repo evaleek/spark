@@ -845,6 +845,7 @@ pub const Message = union {
     pub const MouseXButton = struct {
         /// Indicates whether various virtual keys are down.
         state: MouseKey,
+        button: Button,
         /// The x-coordinate of the cursor,
         /// relative to the upper-left corner of the client area.
         /// This value can be negative on systems with multiple monitors.
@@ -853,7 +854,6 @@ pub const Message = union {
         /// relative to the upper-left corner of the client area.
         /// This value can be negative on systems with multiple monitors.
         y: i16,
-        button: Button,
 
         pub const Button = enum (WORD) {
             @"1" = 0x0001,
@@ -879,9 +879,9 @@ pub const Message = union {
             const l: LWords = @bitCast(lParam);
             return MouseXButton{
                 .state = @bitCast(w.low),
+                .button = @enumFromInt(w.high),
                 .x = @bitCast(l.low),
                 .y = @bitCast(l.high),
-                .button = @enumFromInt(w.high),
             };
         }
     };
@@ -895,6 +895,7 @@ pub const Message = union {
     ///
     /// A window receives this message through its `WindowProc` function.
     pub const MouseWheel = struct {
+        state: MouseKey,
         /// The distance the wheel is rotated,
         /// expressed in multiples of `WHEEL_DELTA`, which is `120`.
         /// A positive value indicates that the wheel was rotated forward,
@@ -902,7 +903,6 @@ pub const Message = union {
         /// a negative value indicates that the wheel was rotated backward,
         /// toward the user, or to the left.
         rotation: i16,
-        state: MouseKey,
         /// The x-coordinate of the cursor,
         /// relative to the upper-left corner of the client area.
         /// This value can be negative on systems with multiple monitors.
@@ -920,8 +920,38 @@ pub const Message = union {
             const w: WWords = @bitCast(wParam);
             const l: LWords = @bitCast(lParam);
             return MouseWheel{
-                .rotation = @bitCast(w.high),
                 .state = @bitCast(w.low),
+                .rotation = @bitCast(w.high),
+                .x = @bitCast(l.low),
+                .y = @bitCast(l.high),
+            };
+        }
+    };
+
+    /// Sent to a window in order to determine
+    /// what part of the window corresponds to a particular screen coordinate.
+    /// This can happen, for example,
+    /// when the cursor moves,
+    /// when a mouse button is pressed or released,
+    /// or in response to a call to a function such as `WindowFromPoint`.
+    /// If the mouse is not captured, the message is sent
+    /// to the window beneath the cursor.
+    /// Otherwise, the message is sent to the window that has captured the mouse.
+    ///
+    /// When processing this message, `DefWindowProc` / the `WindowProc`
+    /// returns one of the `HT*` values (the `HitTestResult` enum)
+    /// to indicate the position of the cursor hot spot.
+    pub const HitTest = struct {
+        x: i16,
+        y: i16,
+
+        pub const message = WM.NCHITTEST;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) HitTest {
+            assert(uMsg == message);
+            _ = wParam;
+            const l: LWords = @bitCast(lParam);
+            return HitTest{
                 .x = @bitCast(l.low),
                 .y = @bitCast(l.high),
             };
@@ -2920,6 +2950,65 @@ test MouseKey {
     );
 }
 
+pub const HitTestResult = enum (LRESULT) {
+    /// In the border of a window that does not have a sizing border.
+    border = HT.BORDER,
+    /// In the lower_horizontal border of a resizable window
+    /// (the user can click the mouse to resize the window vertically).
+    bottom = HT.BOTTOM,
+    /// In the lower-left corner of a border of a resizable window
+    /// (the user can click the mouse to resize the window vertically).
+    bottom_left = HT.BOTTOMLEFT,
+    /// In the lower-right corner of a border of resizable window
+    /// (the user can click the mouse to resize the window diagonally).
+    bottom_right = HT.BOTTOMRIGHT,
+    /// In a title bar.
+    caption = HT.CAPTION,
+    /// In a client area.
+    client = HT.CLIENT,
+    /// In a Close button.
+    close = HT.CLOSE,
+    /// On the screen background or on a dividing line between windows
+    /// (same as `nowhere`, except that the `DefWindowProc` function
+    /// produces a system beep to indicate an error)
+    @"error" = HT.ERROR,
+    /// In a Help button.
+    help = HT.HELP,
+    /// In a horizontal scroll bar.
+    horizontal_scroll = HT.HSCROLL,
+    /// In the left border of a resizable window
+    /// (the user can click the mouse to resize the window horizontally).
+    left = HT.LEFT,
+    /// In a menu.
+    menu = HT.MENU,
+    /// On the screen background or on a dividing line between windows.
+    nowhere = HT.NOWHERE,
+    /// In a Minimize button.
+    reduce = HT.REDUCE,
+    /// In the right border of a resizable window
+    /// (the user can click the mouse to resize the window horizontally).
+    right = HT.RIGHT,
+    /// In a size box.
+    size = HT.SIZE,
+    /// In a window menu or in a Close button in a child window.
+    system_menu = HT.SYSMENU,
+    /// In the upper-horizontal border of a window.
+    top = HT.TOP,
+    /// In the upper-left corner of a window border.
+    top_left = HT.TOPLEFT,
+    /// In the upper-right corner of a window border.
+    top_right = HT.TOPRIGHT,
+    /// In a window currently covered by another window in the same thread
+    /// (the message will be sent to underlying windows in the same thread
+    /// until one of them returns a code that is not `transparent`.
+    transparent = HT.TRANSPARENT,
+    /// In the vertical scroll bar.
+    vertical_scroll = HT.VSCROLL,
+    /// In a Maximize button.
+    zoom = HT.ZOOM,
+    _,
+};
+
 pub const MSG = extern struct {
     /// A handle to the window whose window procedure receives the message.
     /// This member is `null` when the message is a thread message.
@@ -3591,6 +3680,35 @@ pub const MK = struct {
 };
 
 pub const WHEEL_DELTA = 120;
+
+pub const HT = struct {
+    pub const BORDER = 18;
+    pub const BOTTOM = 15;
+    pub const BOTTOMLEFT = 16;
+    pub const BOTTOMRIGHT = 17;
+    pub const CAPTION = 2;
+    pub const CLIENT = 1;
+    pub const CLOSE = 20;
+    pub const ERROR = -2;
+    pub const GROWBOX = 4;
+    pub const HELP = 21;
+    pub const HSCROLL = 6;
+    pub const LEFT = 10;
+    pub const MENU = 5;
+    pub const MAXBUTTON = 9;
+    pub const MINBUTTON = 8;
+    pub const NOWHERE = 0;
+    pub const REDUCE = 8;
+    pub const RIGHT = 11;
+    pub const SIZE = 4;
+    pub const SYSMENU = 3;
+    pub const TOP = 12;
+    pub const TOPLEFT = 13;
+    pub const TOPRIGHT = 14;
+    pub const TRANSPARENT = -1;
+    pub const VSCROLL = 7;
+    pub const ZOOM = 9;
+};
 
 // Assumed in some field types of message parse structs
 comptime { assert(@bitSizeOf(WORD) == 16); }
