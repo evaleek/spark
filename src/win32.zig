@@ -767,6 +767,51 @@ pub const Message = union {
             };
         }
     };
+
+    /// Posted to a window
+    /// when the cursor leaves the client area of the window
+    /// specified in a prior call to `TrackMouseEvent`.
+    ///
+    /// A window receives this message through its `WindowProc` function.
+    ///
+    /// All tracking requested by `TrackMouseEvent`
+    /// is canceled when this message is generated.
+    /// The application must call `TrackMouseEvent`
+    /// when the mouse reenters its window
+    /// if it requires further tracking of mouse hover behavior.
+    pub const MouseLeave = struct {
+        pub const message = WM.MOUSELEAVE;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+    };
+
+    /// Sent to the window that is losing the mouse capture.
+    ///
+    /// A window receives this message through its `WindowProc` function.
+    ///
+    /// A window receives this message even if it calls `ReleaseCapture` itself.
+    /// An application should not attempt to set the mouse capture
+    /// in response to this message.
+    ///
+    /// When it receives this message,
+    /// a window should redraw itself, if necessary
+    /// to reflect the new mouse-capture state.
+    pub const CaptureChanged = struct {
+        /// A handle to the window gaining the mouse capture.
+        gained: ?HWND,
+
+        pub const message = WM.CAPTURECHANGED;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) MouseMove {
+            assert(uMsg == message);
+            _ = wParam;
+            return MouseMove{
+                .gained = @ptrFromInt(@as(usize, @bitCast(lParam))),
+            };
+        }
+    };
 };
 
 pub const WindowsMessage = enum(u16) {
