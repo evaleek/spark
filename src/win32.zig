@@ -2647,6 +2647,48 @@ pub const VirtualKey = enum(u8) {
     _,
 };
 
+pub const MouseKey = packed struct (WORD) {
+    left_button: bool = false,
+    right_button: bool = false,
+    shift: bool = false,
+    control: bool = false,
+    middle_button: bool = false,
+    x_button_1: bool = false,
+    x_button_2: bool = false,
+    _padding: u9 = 0,
+};
+
+test MouseKey {
+    try testing.expectEqual(
+        @as(WORD, MK.LBUTTON),
+        @as(WORD, @bitCast(MouseKey{ .left_button = true })),
+    );
+    try testing.expectEqual(
+        @as(WORD, MK.RBUTTON),
+        @as(WORD, @bitCast(MouseKey{ .right_button = true })),
+    );
+    try testing.expectEqual(
+        @as(WORD, MK.SHIFT),
+        @as(WORD, @bitCast(MouseKey{ .shift = true })),
+    );
+    try testing.expectEqual(
+        @as(WORD, MK.CONTROL),
+        @as(WORD, @bitCast(MouseKey{ .control = true })),
+    );
+    try testing.expectEqual(
+        @as(WORD, MK.MBUTTON),
+        @as(WORD, @bitCast(MouseKey{ .middle_button = true })),
+    );
+    try testing.expectEqual(
+        @as(WORD, MK.XBUTTON1),
+        @as(WORD, @bitCast(MouseKey{ .x_button_1 = true })),
+    );
+    try testing.expectEqual(
+        @as(WORD, MK.XBUTTON2),
+        @as(WORD, @bitCast(MouseKey{ .x_button_2 = true })),
+    );
+}
+
 pub const MSG = extern struct {
     /// A handle to the window whose window procedure receives the message.
     /// This member is `null` when the message is a thread message.
@@ -3305,6 +3347,16 @@ pub const VK = struct {
     pub const NONAME = 0xFC;
     pub const PA1 = 0xFD;
     pub const OEM_CLEAR = 0xFE;
+};
+
+pub const MK = struct {
+    pub const CONTROL = 0x0008;
+    pub const LBUTTON = 0x0001;
+    pub const MBUTTON = 0x0010;
+    pub const RBUTTON = 0x0002;
+    pub const SHIFT = 0x0004;
+    pub const XBUTTON1 = 0x0020;
+    pub const XBUTTON2 = 0x0040;
 };
 
 // Assumed in some field types of message parse structs
