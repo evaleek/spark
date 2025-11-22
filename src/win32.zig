@@ -32,8 +32,8 @@ pub const Message = union {
         /// The menu to be used by the new window.
         menu: HMENU,
         /// A handle to the parent or owner window,
-        /// or `0` if this window is not a child or owned window.
-        parent: HWND,
+        /// or `null` if this window is not a child or owned window.
+        parent: ?HWND,
         /// The height of the new window, in pixels.
         height: c_int,
         /// The width of the new window, in pixels.
@@ -60,20 +60,16 @@ pub const Message = union {
         /// If an application processes this message,
         /// it should return zero to continue creation of the window.
         pub const processed: LRESULT = 0;
-        /// If the application returns -1,
+        /// If the application returns `-1`,
         /// the window is destroyed
         /// and the `CreateWindowEx` or `CreateWindow` function
-        /// returns a `NULL` handle.
+        /// returns a `null` handle.
         pub const failed: LRESULT = -1;
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) *const Create {
             assert(uMsg == message);
             _ = wParam;
             return @ptrFromInt(lParam);
-        }
-
-        pub fn getParent(create: Create) ?HWND {
-            return if (create.parent != 0) create.parent else null;
         }
     };
     comptime {
@@ -297,7 +293,7 @@ pub const Message = union {
     /// It is more efficient to perform any move or size change processing
     /// during `WM_WINDOWPOSCHANGED` without calling `DefWindowProc`.
     pub const WindowPositionChange = extern struct {
-        /// The `hwnd` listed in this event's inner struct.
+        /// A handle to the window.
         window: HWND,
         /// The position of the window in Z order (front-to-back position).
         /// This member can be a handle to
@@ -333,7 +329,7 @@ pub const Message = union {
 
             pub fn which(z: Z) OrderOrWindow {
                 return if (std.math.cast(@typeInfo(WindowSpecialZ).tag_type,
-                        @as(HWND, @bitCast(z)))) |_| .order
+                        @as(usize, @bitCast(z)))) |_| .order
                     else .window;
             }
 
@@ -357,7 +353,7 @@ pub const Message = union {
         pub fn fromParamsChanged(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) *const WindowPositionChange {
             assert(uMsg == WM.WINDOWPOSCHANGED);
             _ = wParam;
-            return @ptrFromInt(lParam);
+            return @ptrFromInt(@as(usize, @bitCast(lParam)));
         }
 
         /// An application may modify this struct during the CHANGING event
@@ -373,7 +369,7 @@ pub const Message = union {
         pub fn fromParamsChanging(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) *WindowPositionChange {
             assert(uMsg == WM.WINDOWPOSCHANGING);
             _ = wParam;
-            return @ptrFromInt(lParam);
+            return @ptrFromInt(@as(usize, @bitCast(lParam)));
         }
     };
     comptime {
@@ -552,7 +548,7 @@ pub const Message = union {
             return Activate{
                 .activation = @enumFromInt(w.low),
                 .minimized = w.high!=0,
-                .other = if (lParam != 0) @ptrFromInt(lParam) else null,
+                .other = @ptrFromInt(@as(usize, @bitCast(lParam))),
             };
         }
     };
@@ -574,7 +570,7 @@ pub const Message = union {
         /// `false` if an inactive title bar or icon is to be drawn.
         active: bool,
         /// Whether `DefWindowProc`
-        /// will repaint the nonclient area to reflect the state change.
+        /// repaints the nonclient area to reflect the state change.
         repaint: bool,
         /// `null` if not repainting the nonclient area to reflect stage change,
         /// or if the previous/next window is from another application.
@@ -590,8 +586,8 @@ pub const Message = union {
             assert(uMsg == message);
             return NonclientActivate{
                 .active = wParam!=0,
-                .repaint = lParam==-1,
-                .other = if (lParam > 0) @ptrFromInt(lParam) else null,
+                .repaint = lParam!=-1,
+                .other = if (lParam!=-1) @ptrFromInt(@as(usize, @bitCast(lParam))) else null,
             };
         }
     };
