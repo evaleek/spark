@@ -730,6 +730,43 @@ pub const Message = union {
             };
         }
     };
+
+    // TODO IME events here (WM_STARTCOMPOSITION, WM_COMPOSITION, ...)
+
+    /// Posted to a window when the cursor moves.
+    /// If the mouse is not captured,
+    /// the message is posted to the window that contains the cursor.
+    /// Otherwise, the message is posted
+    /// to the window that has captured the mouse.
+    ///
+    /// A window receives this message through its `WindowProc` function.
+    pub const MouseMove = struct {
+        /// Indicates whether various virtual keys are down.
+        state: MouseKey,
+        /// The x-coordinate of the cursor,
+        /// relative to the upper-left corner of the client area.
+        /// This value can be negative on systems with multiple monitors.
+        x: i16,
+        /// The y-coordinate of the cursor,
+        /// relative to the upper-left corner of the client area.
+        /// This value can be negative on systems with multiple monitors.
+        y: i16,
+
+        pub const message = WM.MOUSEMOVE;
+        /// If an application processes this message, it should return this value.
+        pub const processed: LRESULT = 0;
+
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) MouseMove {
+            assert(uMsg == message);
+            const w: WWords = @bitCast(wParam);
+            const l: LWords = @bitCast(lParam);
+            return MouseMove{
+                .state = @bitCast(w.low),
+                .x = @bitCast(l.low),
+                .y = @bitCast(l.high),
+            };
+        }
+    };
 };
 
 pub const WindowsMessage = enum(u16) {
@@ -2664,28 +2701,62 @@ test MouseKey {
         @as(WORD, @bitCast(MouseKey{ .left_button = true })),
     );
     try testing.expectEqual(
+        @as(WWords, @bitCast(@as(WPARAM, MK.LBUTTON))).low,
+        @as(WORD, @bitCast(MouseKey{ .left_button = true }))
+    );
+
+    try testing.expectEqual(
         @as(WORD, MK.RBUTTON),
         @as(WORD, @bitCast(MouseKey{ .right_button = true })),
     );
+    try testing.expectEqual(
+        @as(WWords, @bitCast(@as(WPARAM, MK.RBUTTON))).low,
+        @as(WORD, @bitCast(MouseKey{ .right_button = true }))
+    );
+
     try testing.expectEqual(
         @as(WORD, MK.SHIFT),
         @as(WORD, @bitCast(MouseKey{ .shift = true })),
     );
     try testing.expectEqual(
+        @as(WWords, @bitCast(@as(WPARAM, MK.SHIFT))).low,
+        @as(WORD, @bitCast(MouseKey{ .shift = true }))
+    );
+
+    try testing.expectEqual(
         @as(WORD, MK.CONTROL),
         @as(WORD, @bitCast(MouseKey{ .control = true })),
     );
+    try testing.expectEqual(
+        @as(WWords, @bitCast(@as(WPARAM, MK.CONTROL))).low,
+        @as(WORD, @bitCast(MouseKey{ .control = true }))
+    );
+
     try testing.expectEqual(
         @as(WORD, MK.MBUTTON),
         @as(WORD, @bitCast(MouseKey{ .middle_button = true })),
     );
     try testing.expectEqual(
+        @as(WWords, @bitCast(@as(WPARAM, MK.MBUTTON))).low,
+        @as(WORD, @bitCast(MouseKey{ .middle_button = true }))
+    );
+
+    try testing.expectEqual(
         @as(WORD, MK.XBUTTON1),
         @as(WORD, @bitCast(MouseKey{ .x_button_1 = true })),
     );
     try testing.expectEqual(
+        @as(WWords, @bitCast(@as(WPARAM, MK.XBUTTON1))).low,
+        @as(WORD, @bitCast(MouseKey{ .x_button_1 = true }))
+    );
+
+    try testing.expectEqual(
         @as(WORD, MK.XBUTTON2),
         @as(WORD, @bitCast(MouseKey{ .x_button_2 = true })),
+    );
+    try testing.expectEqual(
+        @as(WWords, @bitCast(@as(WPARAM, MK.XBUTTON2))).low,
+        @as(WORD, @bitCast(MouseKey{ .x_button_2 = true }))
     );
 }
 
