@@ -45,7 +45,10 @@ pub const Message = union {
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) *const Create {
             assert(uMsg == message);
             _ = wParam;
-            return @ptrFromInt(lParam);
+            const create: *const CREATESTRUCTW = @ptrFromInt(lParam);
+            assert(create.hInstance != null);
+            assert(create.hMenu != null);
+            return @ptrCast(create);
         }
     };
     comptime {
@@ -332,7 +335,9 @@ pub const Message = union {
         pub fn fromParamsChanged(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) *const WindowPositionChange {
             assert(uMsg == WM.WINDOWPOSCHANGED);
             _ = wParam;
-            return @ptrFromInt(@as(usize, @bitCast(lParam)));
+            const change: *const WINDOWPOS = @ptrFromInt(@as(usize, @bitCast(lParam)));
+            assert(change.hwnd != null);
+            return @ptrCast(change);
         }
 
         /// An application may modify this struct during the CHANGING event
@@ -348,7 +353,9 @@ pub const Message = union {
         pub fn fromParamsChanging(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) *WindowPositionChange {
             assert(uMsg == WM.WINDOWPOSCHANGING);
             _ = wParam;
-            return @ptrFromInt(@as(usize, @bitCast(lParam)));
+            const change: *WINDOWPOS = @ptrFromInt(@as(usize, @bitCast(lParam)));
+            assert(change.hwnd != null);
+            return @ptrCast(change);
         }
     };
     comptime {
@@ -488,7 +495,7 @@ pub const Message = union {
             assert(uMsg == message);
             _ = lParam;
             return KillFocus{
-                .recipient = if (wParam != 0) @ptrFromInt(wParam) else null,
+                .recipient = @ptrFromInt(wParam),
             };
         }
     };
@@ -3108,9 +3115,9 @@ pub const MSG = extern struct {
 
 pub const CREATESTRUCTW = extern struct {
     lpCreateParams: ?LPVOID,
-    hInstance: HINSTANCE,
-    hMenu: HMENU,
-    hwndParent: HWND,
+    hInstance: ?HINSTANCE,
+    hMenu: ?HMENU,
+    hwndParent: ?HWND,
     cy: c_int,
     cx: c_int,
     y: c_int,
@@ -3120,19 +3127,15 @@ pub const CREATESTRUCTW = extern struct {
     lpszClass: LPCWSTR,
     dwExStyle: DWORD,
 };
-comptime {
-    assert(@sizeOf(LPVOID) == @sizeOf(?LPVOID));
-    assert(@alignOf(LPVOID) == @alignOf(?LPVOID));
-}
 
 pub const WINDOWPOS = extern struct {
     /// A handle to the window.
-    hwnd: HWND,
+    hwnd: ?HWND,
     /// The position of the window in Z order (front-to-back position).
     /// This member can be
     /// a handle to the window behind which this window is placed, or can be
     /// one of the special values listed with the `SetWindowPos` function.
-    hwndInsertAfter: HWND,
+    hwndInsertAfter: ?HWND,
     /// The position of the left edge of the window.
     x: c_int,
     /// The position of the top edge of the window.
