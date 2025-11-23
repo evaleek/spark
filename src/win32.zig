@@ -1,27 +1,3 @@
-pub const WWords = packed struct (WPARAM) {
-    /// LOWORD(WPARAM) equivalent
-    low: WORD,
-    /// HIWORD(WPARAM) equivalent
-    high: WORD,
-    /// Unused on 64-bit systems
-    _padding: @Type(.{ .int = .{
-        .signedness = .unsigned,
-        .bits = @bitSizeOf(WPARAM) - ( 2 * @bitSizeOf(WORD) ),
-    }}),
-};
-
-pub const LWords = packed struct (LPARAM) {
-    /// LOWORD(LPARAM) equivalent
-    low: WORD,
-    /// HIWORD(LPARAM) equivalent
-    high: WORD,
-    /// Unused on 64-bit systems
-    _padding: @Type(.{ .int = .{
-        .signedness = .unsigned,
-        .bits = @bitSizeOf(LPARAM) - ( 2 * @bitSizeOf(WORD) ),
-    }}),
-};
-
 pub const Message = union {
 
     pub const Create = extern struct {
@@ -226,7 +202,7 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Move {
             assert(uMsg == message);
-            const l: LWords = @bitCast(lParam);
+            const l = asWords(lParam);
             _ = wParam;
             return Move{
                 .x = @bitCast(l.low),
@@ -271,7 +247,7 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Size {
             assert(uMsg == message);
-            const l: LWords = @bitCast(lParam);
+            const l = asWords(lParam);
             return Size{
                 .request = .fromParam(wParam),
                 .width = l.low,
@@ -435,7 +411,7 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) DPIChanged {
             assert(uMsg == message);
-            const w: WWords = @bitCast(wParam);
+            const w = asWords(wParam);
             return DPIChanged{
                 .x_dpi = w.low,
                 .y_dpi = w.high,
@@ -461,7 +437,7 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) DisplayChange {
             assert(uMsg == message);
-            const l: LWords = @bitCast(lParam);
+            const l = asWords(lParam);
             return DisplayChange{
                 .bits_per_pixel = wParam,
                 .horizontal = l.low,
@@ -547,7 +523,7 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Activate {
             assert(uMsg == message);
-            const w: WWords = @bitCast(wParam);
+            const w = asWords(wParam);
             return Activate{
                 .activation = @enumFromInt(w.low),
                 .minimized = w.high!=0,
@@ -720,7 +696,7 @@ pub const Message = union {
                 uMsg == WM.SYSCHAR or
                 uMsg == WM.SYSDEADCHAR
             );
-            const w: WWords = @bitCast(wParam);
+            const w = asWords(wParam);
             const l_unsigned: usize = @bitCast(lParam);
             const l_dword: u32 = @truncate(l_unsigned);
             return Character{
@@ -827,8 +803,8 @@ pub const Message = union {
                 uMsg == WM.XBUTTONUP or
                 uMsg == WM.XBUTTONDBLCLK
             );
-            const w: WWords = @bitCast(wParam);
-            const l: LWords = @bitCast(lParam);
+            const w = asWords(wParam);
+            const l = asWords(lParam);
             return Mouse{
                 .state = @bitCast(w.low),
                 .x = @bitCast(l.low),
@@ -878,8 +854,8 @@ pub const Message = union {
                 uMsg == WM.XBUTTONUP or
                 uMsg == WM.XBUTTONDBLCLK
             );
-            const w: WWords = @bitCast(wParam);
-            const l: LWords = @bitCast(lParam);
+            const w = asWords(wParam);
+            const l = asWords(lParam);
             return MouseXButton{
                 .state = @bitCast(w.low),
                 .button = @enumFromInt(w.high),
@@ -920,8 +896,8 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) MouseWheel {
             assert(uMsg == WM.MOUSEWHEEL or uMsg == WM.MOUSEHWHEEL);
-            const w: WWords = @bitCast(wParam);
-            const l: LWords = @bitCast(lParam);
+            const w = asWords(wParam);
+            const l = asWords(lParam);
             return MouseWheel{
                 .state = @bitCast(w.low),
                 .rotation = @bitCast(w.high),
@@ -953,7 +929,7 @@ pub const Message = union {
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) HitTest {
             assert(uMsg == message);
             _ = wParam;
-            const l: LWords = @bitCast(lParam);
+            const l = asWords(lParam);
             return HitTest{
                 .x = @bitCast(l.low),
                 .y = @bitCast(l.high),
@@ -2913,7 +2889,7 @@ test MouseKey {
         @as(WORD, @bitCast(MouseKey{ .left_button = true })),
     );
     try testing.expectEqual(
-        @as(WWords, @bitCast(@as(WPARAM, MK.LBUTTON))).low,
+        asWords(@as(WPARAM, MK.LBUTTON)).low,
         @as(WORD, @bitCast(MouseKey{ .left_button = true }))
     );
 
@@ -2922,7 +2898,7 @@ test MouseKey {
         @as(WORD, @bitCast(MouseKey{ .right_button = true })),
     );
     try testing.expectEqual(
-        @as(WWords, @bitCast(@as(WPARAM, MK.RBUTTON))).low,
+        asWords(@as(WPARAM, MK.RBUTTON)).low,
         @as(WORD, @bitCast(MouseKey{ .right_button = true }))
     );
 
@@ -2931,7 +2907,7 @@ test MouseKey {
         @as(WORD, @bitCast(MouseKey{ .shift = true })),
     );
     try testing.expectEqual(
-        @as(WWords, @bitCast(@as(WPARAM, MK.SHIFT))).low,
+        asWords(@as(WPARAM, MK.SHIFT)).low,
         @as(WORD, @bitCast(MouseKey{ .shift = true }))
     );
 
@@ -2940,7 +2916,7 @@ test MouseKey {
         @as(WORD, @bitCast(MouseKey{ .control = true })),
     );
     try testing.expectEqual(
-        @as(WWords, @bitCast(@as(WPARAM, MK.CONTROL))).low,
+        asWords(@as(WPARAM, MK.CONTROL)).low,
         @as(WORD, @bitCast(MouseKey{ .control = true }))
     );
 
@@ -2949,7 +2925,7 @@ test MouseKey {
         @as(WORD, @bitCast(MouseKey{ .middle_button = true })),
     );
     try testing.expectEqual(
-        @as(WWords, @bitCast(@as(WPARAM, MK.MBUTTON))).low,
+        asWords(@as(WPARAM, MK.MBUTTON)).low,
         @as(WORD, @bitCast(MouseKey{ .middle_button = true }))
     );
 
@@ -2958,7 +2934,7 @@ test MouseKey {
         @as(WORD, @bitCast(MouseKey{ .x_button_1 = true })),
     );
     try testing.expectEqual(
-        @as(WWords, @bitCast(@as(WPARAM, MK.XBUTTON1))).low,
+        asWords(@as(WPARAM, MK.XBUTTON1)).low,
         @as(WORD, @bitCast(MouseKey{ .x_button_1 = true }))
     );
 
@@ -2967,7 +2943,7 @@ test MouseKey {
         @as(WORD, @bitCast(MouseKey{ .x_button_2 = true })),
     );
     try testing.expectEqual(
-        @as(WWords, @bitCast(@as(WPARAM, MK.XBUTTON2))).low,
+        asWords(@as(WPARAM, MK.XBUTTON2)).low,
         @as(WORD, @bitCast(MouseKey{ .x_button_2 = true }))
     );
 }
@@ -3030,6 +3006,72 @@ pub const HitTestResult = enum (LRESULT) {
     zoom = HT.ZOOM,
     _,
 };
+
+/// Equivalent to `LOWORD()` (`.low`) and HIWORD() (`.high`)
+pub fn asWords(param: anytype) Words(@TypeOf(param)) {
+    return @bitCast(param);
+}
+
+/// Win32 `WORD` bitpacking.
+/// Windows considers the low and high word of an integer type to be
+/// the first 16 and second 16 least significant bits, respectively,
+/// for all integer widths.
+pub fn Words(Param: type) type {
+    if (@bitSizeOf(Param) < (2 * @bitSizeOf(WORD)))
+        @compileError(std.fmt.comptimePrint(
+            "cannot break type {s} into WORDs: bit size {d} is less than {d}",
+            .{ @typeName(Param), @bitSizeOf(Param), 2*@bitSizeOf(WORD) },
+        ));
+    return packed struct {
+        low: WORD,
+        high: WORD,
+        _padding: @Type(.{ .int = .{
+            .signedness = .unsigned,
+            .bits = @bitSizeOf(Param) - (2 * @bitSizeOf(WORD)),
+        }}) = 0,
+    };
+}
+
+test asWords {
+    const param: isize = 0xdeadbeef;
+    const macro_low: WORD = LOWORD(param);
+    const macro_high: WORD = HIWORD(param);
+    const words = asWords(param);
+    const packed_low: WORD = words.low;
+    const packed_high: WORD = words.high;
+
+    try testing.expectEqual(macro_low, packed_low);
+    try testing.expectEqual(macro_high, packed_high);
+}
+
+/// Useful where Windows expects either LPCWSTR or ATOM as an LPCWSTR.
+pub const StringOrAtom = packed union {
+    string: [*:0]const WCHAR,
+    atom: packed struct {
+        word: WORD,
+        _high: @Type(.{ .int = .{
+            .signedness = .unsigned,
+            .bits = @bitSizeOf(LPCWSTR) - @bitSizeOf(WORD),
+        }}) = 0,
+    },
+
+    pub fn which(string_or_atom: StringOrAtom) enum { string, atom } {
+        const raw: usize = @bitCast(string_or_atom);
+        return if (raw <= std.math.maxInt(WORD)) .atom else .string;
+    }
+
+    pub fn fromAtom(atom: ATOM) StringOrAtom {
+        return .{ .atom = .{ .word = atom }};
+    }
+};
+comptime { assert(@bitSizeOf(StringOrAtom) == @bitSizeOf(LPCWSTR)); }
+
+test StringOrAtom {
+    const atom: ATOM = 0x63;
+    const as_macro: usize = @intFromPtr(MAKEINTATOM(atom));
+    const as_packed: usize = @bitCast(StringOrAtom.fromAtom(atom));
+    try testing.expectEqual(as_macro, as_packed);
+}
 
 pub const MSG = extern struct {
     /// A handle to the window whose window procedure receives the message.
@@ -3103,37 +3145,24 @@ pub const WINDOWPOS = extern struct {
     flags: UINT,
 };
 
-const StringOrAtom = packed union {
-    string: [*:0]const WCHAR,
-    atom: packed struct {
-        word: WORD,
-        _high: @Type(.{ .int = .{
-            .signedness = .unsigned,
-            .bits = @bitSizeOf(LPCWSTR) - @bitSizeOf(WORD),
-        }}) = 0,
-    },
-
-    pub fn which(string_or_atom: StringOrAtom) enum { string, atom } {
-        const raw: usize = @bitCast(string_or_atom);
-        return if (raw <= std.math.maxInt(WORD)) .atom else .string;
-    }
-
-    pub fn fromAtom(atom: ATOM) StringOrAtom {
-        return .{ .atom = .{ .word = atom }};
-    }
-};
-comptime { assert(ATOM == WORD); }
-comptime { assert(@bitSizeOf(WORD) == 16); }
-comptime { assert(@bitSizeOf(StringOrAtom) == @bitSizeOf(LPCWSTR)); }
-test StringOrAtom {
-    const atom: ATOM = 0x63;
-    const as_macro: usize = @intFromPtr(MAKEINTATOM(atom));
-    const as_union: usize = @bitCast(StringOrAtom.fromAtom(atom));
-    try testing.expectEqual(as_macro, as_union);
+fn LOWORD(param: anytype) WORD {
+    const Size = @Type(.{ .int = .{
+        .signedness = @typeInfo(@TypeOf(param)).int.signedness,
+        .bits = @bitSizeOf(DWORD_PTR),
+    }});
+    return @truncate(@as(DWORD_PTR, @bitCast(@as(Size, param))) & 0xFFFF);
 }
 
-fn MAKEINTATOM(atom: ATOM) ?[*:0]const align(1) u16 {
-    return @ptrFromInt(@as(u16, @intCast(atom)));
+fn HIWORD(param: anytype) WORD {
+    const Size = @Type(.{ .int = .{
+        .signedness = @typeInfo(@TypeOf(param)).int.signedness,
+        .bits = @bitSizeOf(DWORD_PTR),
+    }});
+    return @truncate((@as(DWORD_PTR, @bitCast(@as(Size, param))) >> 16) & 0xFFFF);
+}
+
+fn MAKEINTATOM(atom: ATOM) ?[*:0]align(1) WCHAR {
+    return @ptrFromInt(@as(ULONG_PTR, @as(WORD, atom)));
 }
 
 /// Windows message values appearing in the low word of the `MSG.message` identifier
@@ -3743,6 +3772,8 @@ pub const LONG = windows.LONG;
 pub const WCHAR = windows.WCHAR;
 pub const WORD = windows.WORD;
 pub const DWORD = windows.DWORD;
+pub const DWORD_PTR = windows.DWORD_PTR;
+pub const ULONG_PTR = windows.ULONG_PTR;
 pub const WPARAM = windows.WPARAM;
 pub const LPARAM = windows.LPARAM;
 pub const LRESULT = windows.LRESULT;
