@@ -280,6 +280,9 @@ pub const Message = union {
         }
     };
 
+    // TODO WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE
+    // TODO W_GETMINMAXINFO
+
     /// Sent to a window whose size, position, or place in the Z-order
     /// is about to change (for `*CHANGING`) or has changed (for `*CHANGED`)
     /// as a result of a call to the `SetWindowPos` function
@@ -957,6 +960,25 @@ pub const Message = union {
             };
         }
     };
+
+    // TODO WM_POINTERDOWN, WM_POINTERUP, WM_POINTERMOVE, WM_POINTERENTER, WM_POINTERLEAVE
+    // TODO WM_TOUCH
+    // TODO WM_PENWIN*
+
+    // TODO WM_CLIPBOARDUPDATE
+
+    // TODO drag and drop
+
+    // TODO WM_INPUT (raw input)
+
+    // TODO WM_COMMAND, WM_APPCOMAND
+    // TODO WM_NOTIFY
+
+    // TODO WM_DWMCOMPOSITIONCHANGED
+    // TODO WM_DWMCOLORIZATIONCHANGED
+
+    // TODO WM_POWERBROADCAST
+    // TODO WM_WTSSESSION_CHANGE
 };
 
 pub const WindowsMessage = enum(u16) {
