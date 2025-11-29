@@ -1,6 +1,6 @@
 //! Relevant functions from `User32`,
-//! which may be used as a dynamically-loaded vtable,
-//! or through a linked `User32` via the externs in `.linked`.
+//! which may be used as a dynamically-loaded interface,
+//! or through a linked `User32` library via the externs in `.linked`.
 
 LocalFree: *const fn (hMem: HLOCAL) callconv(.winapi) ATOM,
 GetLastError: *const fn () callconv(.winapi) DWORD,
@@ -79,6 +79,38 @@ DefWindowProcW: *const fn (
 
 BeginPaint: *const fn (hWnd: HWND, lpPaint: *PAINTSTRUCT) callconv(.winapi) ?HDC,
 EndPaint: *const fn (hWnd: HWND, lpPaint: *const PAINTSTRUCT) callconv(.winapi) BOOL,
+
+/// On error, the missing symbol name will be passed through `missing_name`
+/// if not `null`.
+///
+/// `inline` to propagate the comptime-ness of `missing_name`.
+pub inline fn init(interface: *User32, user32: *WindowsDynLib, missing_name: ?*[:0]const u8) error{MissingSymbol}!void {
+    inline for (@typeInfo(User32).@"struct".fields) |field| {
+        const proc_name: [:0]const u8 = field.name;
+        const Proc: type = field.type;
+        if (user32.lookup(Proc, proc_name)) |proc| {
+            @field(interface, proc_name) = proc;
+        } else {
+            if (missing_name) |name_dest| name_dest.* = proc_name;
+            return error.MissingSymbol;
+        }
+    }
+}
+
+pub fn load(user32: *WindowsDynLib) User32 {
+    var interface: User32 = undefined;
+    interface.init(user32);
+    return interface;
+}
+
+/// The caller must `.close()` this object
+/// only after the interface is no longer in use.
+pub fn openDynLib() WindowsDynLib.Error!WindowsDynLib {
+    return WindowsDynLib.openExW(dll_name_w, .load_library_search_system32);
+}
+
+pub const dll_name = "user32.dll";
+pub const dll_name_w = std.unicode.utf8ToUtf16LeStringLiteral(dll_name);
 
 pub const linked = if (build_options.win32_linked) struct { // TODO more explicitly user32 linked build flag
     pub extern fn LocalFree(hMem: HLOCAL) callconv(.winapi) ?HLOCAL;
@@ -182,6 +214,10 @@ const HDC = win32.HDC;
 const PAINTSTRUCT = win32.PAINTSTRUCT;
 
 const User32 = @This();
+const WindowsDynLib = std.dynamic_library.WindowsDynLib;
 
+const debug = std.debug;
+const log = std.log;
 const win32 = @import("../win32.zig");
 const build_options = @import("build_options");
+const std = @import("std");
