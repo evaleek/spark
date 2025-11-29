@@ -3080,6 +3080,8 @@ test StringOrAtom {
     try testing.expectEqual(as_macro, as_packed);
 }
 
+pub const WNDPROC = fn (?HWND, UINT, WPARAM, LPARAM) callconv(CALLBACK) LRESULT;
+
 pub const MSG = extern struct {
     /// A handle to the window whose window procedure receives the message.
     /// This member is `null` when the message is a thread message.
@@ -3111,6 +3113,21 @@ pub const MSG = extern struct {
             @truncate(msg.message),
         ));
     }
+};
+
+pub const WNDCLASSEXW = extern struct {
+    cbSize: UINT,
+    style: UINT,
+    lpfnWndProc: ?*const WNDPROC,
+    cbClsExtra: c_int,
+    cbWndExtra: c_int,
+    hInstance: ?HINSTANCE,
+    hIcon: ?HICON,
+    hCursor: ?HCURSOR,
+    hbrBackground: ?HBRUSH,
+    lpszMenuName: ?LPCWSTR,
+    lpszClassName: ?LPCWSTR,
+    hIconSm: ?HICON,
 };
 
 pub const CREATESTRUCTW = extern struct {
@@ -3146,6 +3163,28 @@ pub const WINDOWPOS = extern struct {
     cy: c_int,
     /// The window position.
     flags: UINT,
+};
+
+pub const PAINTSTRUCT = extern struct {
+    /// A handle to the display DC to be used for painting.
+    hdc: HDC,
+    /// Indicates whether the background must be erased.
+    /// This value is nonzero if the application should erase the background.
+    /// The application is responsible for erasing the background
+    /// if a window class is created without a background brush.
+    /// For more information, see
+    /// the description of the `hbrBackground` member of the WNDCLASS structure.
+    fErase: BOOL,
+    /// Specifies the upper left and lower right corners of the rectangle
+    /// in which the painting is requested,
+    /// in device units relative to the upper-left corner of the client area.
+    rcPaint: RECT,
+    /// Reserved; used internally by the system.
+    fRestore: BOOL,
+    /// Reserved; used internally by the system.
+    fIncUpdate: BOOL,
+    /// Reserved; used internally by the system.
+    rgbReserved: [32]BYTE,
 };
 
 fn LOWORD(param: anytype) WORD {
@@ -3764,11 +3803,15 @@ pub const HT = struct {
     pub const ZOOM = 9;
 };
 
+// TODO confirm .winapi == __stdcall
+pub const CALLBACK = std.builtin.CallingConvention.winapi;
+
 // Assumed in some field types of message parse structs
 comptime { assert(@bitSizeOf(WORD) == 16); }
 
 pub const FALSE = 0;
 pub const TRUE = 1;
+pub const BYTE = windows.BYTE;
 pub const ATOM = windows.ATOM;
 pub const UINT = windows.UINT;
 pub const LONG = windows.LONG;
@@ -3780,10 +3823,15 @@ pub const ULONG_PTR = windows.ULONG_PTR;
 pub const WPARAM = windows.WPARAM;
 pub const LPARAM = windows.LPARAM;
 pub const LRESULT = windows.LRESULT;
+pub const HLOCAL = windows.HLOCAL;
 pub const HINSTANCE = windows.HINSTANCE;
 pub const HWND = windows.HWND;
+pub const HICON = windows.HICON;
+pub const HCURSOR = windows.HCURSOR;
 pub const HMENU = windows.HMENU;
 pub const LPVOID = windows.LPVOID;
+pub const LPCVOID = windows.LPCVOID;
+pub const LPWSTR = windows.LPWSTR;
 pub const LPCWSTR = windows.LPCWSTR;
 pub const POINT = windows.POINT;
 pub const RECT = windows.RECT;
