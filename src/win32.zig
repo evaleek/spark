@@ -1,3 +1,7 @@
+//! This module wraps procedures from the Win32 API to create and manage windows.
+
+pub const User32 = @import("win32/User32.zig");
+
 pub const Message = union {
 
     pub const Create = extern struct {
