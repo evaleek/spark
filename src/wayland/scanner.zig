@@ -23,8 +23,8 @@ pub fn main() !void {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var stdin_buffer: [4096]u8 = undefined;
-    var stdout_buffer: [4096]u8 = undefined;
+    var read_buffer: [4096]u8 = undefined;
+    var write_buffer: [4096]u8 = undefined;
 
     const in_file_list: std.ArrayList([:0]const u8) = .empty;
     var out_file_path: ?[:0]const u8 = null;
@@ -47,24 +47,24 @@ pub fn main() !void {
         if (out_file_path) |path| cwd.openFile(path, .{ .mode = .write_only})
             catch return error.OutputFileOpenFailure
         else .stdout();
-    var output_writer = out_file.writer(&stdout_buffer);
+    var writer = out_file.writer(&write_buffer);
     defer { if (out_file_path) |_| out_file.close(io); }
 
     var parser: Parser = try .init(allocator);
     defer parser.deinit(allocator);
 
     for (in_file_list.items) |path| {
-        stdin_buffer = undefined;
+        read_buffer = undefined;
 
         const file = try cwd.openFile(path, .{ .mode = .read_only });
         defer file.close();
 
-        var in_reader = file.reader(io, &stdin_buffer);
+        var reader = file.reader(io, &read_buffer);
         parser.newStream();
-        parser.stream(&output_writer.interface, &in_reader.interface, allocator) catch |err| switch (err) {
+        parser.stream(&out_writer.interface, &reader.interface, allocator) catch |err| switch (err) {
             error.OutOfMemory => |e| return e,
-            error.WriteFailed => return output_writer.seek_error.?,
-            error.ReadFailed => log.err("{t} while reading {s}", .{ in_reader.seek_error.?, path }),
+            error.WriteFailed => return writer.seek_error.?,
+            error.ReadFailed => log.err("{t} while reading {s}", .{ reader.seek_error.?, path }),
             error.InvalidWaylandXML => |e| log.err(
                 "{t}: {s}:{d}:{d}: {s}",
                 .{ e, path, parser.line, parser.column, parser.source_invalid_err.?.explain() },
@@ -72,7 +72,7 @@ pub fn main() !void {
         };
     }
 
-    output_writer.interface.flush() catch return output_writer.seek_error.?;
+    writer.interface.flush() catch return writer.seek_error.?;
 }
 
 const Parser = struct {
@@ -81,6 +81,7 @@ const Parser = struct {
         plaintext,
         tag_name,
         attribute_name,
+        attribute_sep,
         attribute_value,
         end_tag,
         /// Literal text content (i.e. within a '<description> ...')
@@ -90,18 +91,21 @@ const Parser = struct {
     };
 
     pub const SourceInvalidError = enum {
-        unexpected_eof,
+        broken_tag,
 
         pub fn explain(err: SourceInvalidError) [:0]const u8 {
             return switch (err) {
-                .unexpected_eof => "TODO",
+                .broken_tag => "expected \'>'\' or \'/>\', found EOF",
             };
         }
     };
 
     pub const Error = error{ WriteFailed, ReadFailed, InvalidWaylandXML } || Allocator.Error;
 
-    token_buffer: ByteArrayList,
+    tag_name_buffer: ByteArrayList,
+    attribute_name_buffer: ByteArrayList,
+    attribute_value_buffer: ByteArrayList,
+    description_buffer: ByteArrayList,
     last_byte: ?u8,
     line: u32,
     column: u32,
@@ -109,21 +113,30 @@ const Parser = struct {
 
     pub fn init(allocator: Allocator) Allocator.Error!Parser {
         return .{
-            .token_buffer = try .initCapacity(allocator, 512),
-            .last_byte = null,
-            .line = 0,
-            .column = 0,
+            .tag_name_buffer = try .initCapacity(allocator, 64),
+            .attribute_name_buffer = try .initCapacity(allocator, 64),
+            .attribute_value_buffer = try .initCapacity(allocator, 128),
+            .description_buffer = try .initCapacity(allocator, 512),
+            .last_byte = undefined,
+            .line = undefined,
+            .column = undefined,
             .source_invalid_err = null,
         };
     }
 
     pub fn deinit(parser: *Parser, allocator: Allocator) void {
-        parser.token_buffer.deinit(allocator);
+        parser.description_buffer.deinit(allocator);
+        parser.attribute_value_buffer.deinit(allocator);
+        parser.attribute_name_buffer.deinit(allocator);
+        parser.tag_name_buffer.deinit(allocator);
         parser.* = undefined;
     }
 
     pub fn newStream(parser: *Parser) void {
-        parser.token_buffer.clearRetainingCapacity();
+        parser.tag_name_buffer.clearRetainingCapacity();
+        parser.attribute_name_buffer.clearRetainingCapacity();
+        parser.attribute_value_buffer.clearRetainingCapacity();
+        parser.description_buffer.clearRetainingCapacity();
         parser.last_byte = null;
         parser.line = 0;
         parser.column = 0;
@@ -134,6 +147,7 @@ const Parser = struct {
             .plaintext => {
                 const char = try parser.nextByte(reader) orelse return;
                 if (char == '<') {
+                    assert(parser.tag_name_buffer.items.len == 0);
                     continue :parse .tag_name;
                 } else {
                     continue :parse .plaintext;
@@ -142,10 +156,211 @@ const Parser = struct {
 
             .tag_name => {
                 if (try parser.nextByte(reader)) |char| {
+                    if (parser.last_byte == '/' and char != '>') {
+                        parser.source_invalid_err = .unexpected_character;
+                        return error.InvalidWaylandXML;
+                    }
+                    switch (char) {
+                        '<' => {
+                            parser.source_invalid_err = .unexpected_character;
+                            return error.InvalidWaylandXML;
+                        },
+
+                        '/' => {
+                            if (parser.last_byte == '<') {
+                                assert(parser.tag_name_buffer.items.len == 0);
+                                continue :parse .end_tag;
+                            } else {
+                                continue :parse .tag_name;
+                            }
+                        },
+
+                        '>' => {
+                            if (parser.tag_name_buffer.items.len == 0) {
+                                parser.source_invalid_err = .empty_tag_name;
+                                return error.InvalidWaylandXML;
+                            }
+
+                            if (parser.last_byte == '/') {
+                                try parser.pushEmptyElement(writer);
+                                continue :parse .plaintext;
+                            } else {
+                                try parser.pushStartElement(writer);
+                                if (parser.wantsStartDescription()) {
+                                    assert(parser.description_buffer.items.len == 0);
+                                    continue :parse .text;
+                                } else {
+                                    continue :parse .plaintext;
+                                }
+                            }
+                        },
+
+                        ' ', '\t', '\n', '\r',
+                        std.ascii.control_code.vt,
+                        std.ascii.control_code.ff => {
+                            if (parser.tag_name_buffer.items.len == 0) {
+                                continue :parse .tag_name;
+                            } else {
+                                assert(parser.attribute_name_buffer.items.len == 0);
+                                continue :parse .attribute_name;
+                            }
+                        },
+
+                        else => |c| {
+                            try parser.tag_name_buffer.append(allocator, c);
+                            continue :parse .tag_name;
+                        },
+                    }
                 } else {
-                    parser.source_invalid_err = .{
-                        .issue = .unexpected_eof,
-                    };
+                    parser.source_invalid_err = .broken_tag;
+                    return error.InvalidWaylandXML;
+                }
+            },
+
+            .end_tag => {
+                if (try parser.nextByte(reader)) |char| {
+                    switch (char) {
+                        ' ', '\t', '\n', '\r',
+                        std.ascii.control_code.vt,
+                        std.ascii.control_code.ff => continue :parse .end_tag,
+
+                        else => |c| {
+                            try parser.tag_name_buffer.append(allocator, c);
+                            continue :parse .end_tag;
+                        },
+
+                        '>' => {
+                            if (parser.tag_name_buffer.items.len == 0) {
+                                parser.source_invalid_err = .empty_tag_name;
+                                return error.InvalidWaylandXML;
+                            } else {
+                                try parser.pushEndElement(writer);
+                                continue :parse .plaintext;
+                            }
+                        },
+                    }
+                } else {
+                    parser.source_invalid_err = .broken_tag;
+                    return error.InvalidWaylandXML;
+                }
+            },
+
+            .attribute_name => {
+                if (try parser.nextByte(reader)) |char| {
+                    switch (char) {
+                        '<' => {
+                            parser.source_invalid_err = .unexpected_character;
+                            return error.InvalidWaylandXML;
+                        },
+
+                        '/' => {
+                            if (parser.attribute_name_buffer.items.len == 0) {
+                                continue :parse .tag_name;
+                            } else {
+                                parser.source_invalid_err = .unexpected_character;
+                                return error.InvalidWaylandXML;
+                            }
+                        },
+
+                        '>' => {
+                            if (parser.attribute_name_buffer.items.len != 0) {
+                                parser.source_invalid_err = .unvalued_attribute;
+                                return error.InvalidWaylandXML;
+                            }
+
+                            if (parser.tag_name_buffer.items.len == 0) {
+                                parser.source_invalid_err = .empty_tag_name;
+                            }
+
+                            if (parser.last_byte == '/') {
+                                try parser.pushEmptyElement(writer);
+                                continue :parse .plaintext;
+                            } else {
+                                try parser.pushStartElement(writer);
+                                if (parser.wantsStartDescription()) {
+                                    assert(parser.description_buffer.items.len == 0);
+                                    continue :parse .text;
+                                } else {
+                                    continue :parse .plaintext;
+                                }
+                            }
+                        },
+
+                        ' ', '\t', '\n', '\r',
+                        std.ascii.control_code.vt,
+                        std.ascii.control_code.ff => continue :parse .attribute_name,
+
+                        '=' => {
+                            if (parser.attribute_name_buffer.items.len == 0) {
+                                parser.source_invalid_err = .unexpected_character;
+                                return error.InvalidWaylandXML;
+                            } else {
+                                try parser.pushAttribute(writer);
+                                continue :parse .attribute_sep;
+                            }
+                        },
+                    }
+                } else {
+                    parser.source_invalid_err = .broken_tag;
+                    return error.InvalidWaylandXML;
+                }
+            },
+
+            .attribute_sep => {
+                if (try parser.nextByte(reader)) |char| {
+                    switch (char) {
+                        ' ', '\t', '\n', '\r',
+                        std.ascii.control_code.vt,
+                        std.ascii.control_code.ff => continue :parse .attribute_sep,
+                        '"' => {
+                            assert(parser.attribute_value_buffer.items.len == 0);
+                            continue :parse .attribute_value;
+                        },
+                        else => {
+                            parser.source_invalid_err = .unexpected_character;
+                            return error.InvalidWaylandXML;
+                        },
+                    }
+                } else {
+                    parser.source_invalid_err = .broken_tag;
+                    return error.InvalidWaylandXML;
+                }
+            },
+
+            .attribute_value => {
+                if (try parser.nextByte(reader)) |char| {
+                    switch (char) {
+                        else => |c| {
+                            try parser.attribute_value_buffer.append(allocator, c);
+                            continue :parse .attribute_value;
+                        },
+
+                        '"' => {
+                            try parser.pushAttributeValue(writer);
+                            continue :parse .attribute_name;
+                        },
+                    }
+                } else {
+                    parser.source_invalid_err = .broken_tag;
+                    return error.InvalidWaylandXML;
+                }
+            },
+
+            .text => {
+                if (try parser.nextByte(reader)) |char| {
+                    switch (char) {
+                        else => |c| {
+                            try parser.description_buffer.append(allocator, c);
+                            continue :parse .text;
+                        },
+
+                        '<' => {
+                            try parser.pushDescription(writer);
+                            continue :parse .tag_name;
+                        },
+                    }
+                } else {
+                    parser.source_invalid_err = .broken_tag;
                     return error.InvalidWaylandXML;
                 }
             },
@@ -153,7 +368,7 @@ const Parser = struct {
         unreachable;
     }
 
-    pub fn nextByte(parser: *Parser, reader: *Io.Reader) !?u8 {
+    fn nextByte(parser: *Parser, reader: *Io.Reader) !?u8 {
         const byte = reader.takeByte() catch |err| return switch (err) {
             error.EndOfStream => null,
             error.ReadFailed => |e| e,
@@ -169,22 +384,22 @@ const Parser = struct {
 
         return byte;
     }
+
+    fn pushEmptyElement(parser: *Parser, writer: *Io.Writer) !void {
+        // An empty element tag ('<tagname/>')
+        // TODO check for other buffers empty or return parse invalid
+    }
+
+    fn wantsStartDescription(parser: Parser) bool {
+    }
 };
 
 fn isNewline(char: u8, last_char: u8) bool {
     return char=='\r' or ( char=='\n' and last_char!='\r' );
 }
 
-fn isWhitespace(char: u8) bool {
-    return switch (char) {
-        ' ', '\t', '\n', '\r',
-        std.ascii.control_code.vt,
-        std.ascii.control_code.ff => return true,
-        else => return false,
-    };
-}
-
 const ByteArrayList = std.ArrayList(u8);
+const assert = std.debug.assert;
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
