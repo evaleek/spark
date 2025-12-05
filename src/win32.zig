@@ -32,7 +32,7 @@ pub const Message = union {
         /// The name of the new window.
         name: [*:0]const WCHAR,
         /// A pointer to a null-terminated string or an atom
-        /// that specifies the class name of the new window.
+        /// that specifies the class of the new window.
         class: StringOrAtom,
         extended_style: WindowStyleExtended,
 
@@ -142,7 +142,7 @@ pub const Message = union {
             }});
             const masked: Mask = @truncate(wParam);
             const code: c_int = @bitCast(masked);
-            return Quit{ .exit = code };
+            return .{ .exit = code };
         }
     };
 
@@ -173,7 +173,7 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) ShowWindow {
             assert(uMsg == message);
-            return ShowWindow{
+            return .{
                 .shown = wParam != 0,
                 .status = @enumFromInt(lParam),
             };
@@ -211,7 +211,7 @@ pub const Message = union {
             assert(uMsg == message);
             const l = asWords(lParam);
             _ = wParam;
-            return Move{
+            return .{
                 .x = @bitCast(l.low),
                 .y = @bitCast(l.high),
             };
@@ -255,7 +255,7 @@ pub const Message = union {
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Size {
             assert(uMsg == message);
             const l = asWords(lParam);
-            return Size{
+            return .{
                 .request = .fromParam(wParam),
                 .width = l.low,
                 .height = l.high,
@@ -423,7 +423,7 @@ pub const Message = union {
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) DPIChanged {
             assert(uMsg == message);
             const w = asWords(wParam);
-            return DPIChanged{
+            return .{
                 .x_dpi = w.low,
                 .y_dpi = w.high,
                 .suggested_window = @intFromPtr(lParam),
@@ -449,7 +449,7 @@ pub const Message = union {
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) DisplayChange {
             assert(uMsg == message);
             const l = asWords(lParam);
-            return DisplayChange{
+            return .{
                 .bits_per_pixel = wParam,
                 .horizontal = l.low,
                 .vertical = l.high,
@@ -472,7 +472,7 @@ pub const Message = union {
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) SetFocus {
             assert(uMsg == message);
             _ = lParam;
-            return SetFocus{
+            return .{
                 .donor = if (wParam != 0) @ptrFromInt(wParam) else null,
             };
         }
@@ -498,7 +498,7 @@ pub const Message = union {
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) KillFocus {
             assert(uMsg == message);
             _ = lParam;
-            return KillFocus{
+            return .{
                 .recipient = @ptrFromInt(wParam),
             };
         }
@@ -535,7 +535,7 @@ pub const Message = union {
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Activate {
             assert(uMsg == message);
             const w = asWords(wParam);
-            return Activate{
+            return .{
                 .activation = @enumFromInt(w.low),
                 .minimized = w.high!=0,
                 .other = @ptrFromInt(@as(usize, @bitCast(lParam))),
@@ -574,7 +574,7 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) NonclientActivate {
             assert(uMsg == message);
-            return NonclientActivate{
+            return .{
                 .active = wParam!=0,
                 .repaint = lParam!=-1,
                 .other = if (lParam!=-1) @ptrFromInt(@as(usize, @bitCast(lParam))) else null,
@@ -598,7 +598,7 @@ pub const Message = union {
             const w: u8 = @truncate(wParam);
             const l: usize = @bitCast(lParam);
             const l_dword: u32 = @truncate(l);
-            return Key{
+            return .{
                 .virtual = @enumFromInt(w),
                 .keystroke = @bitCast(l_dword),
             };
@@ -615,7 +615,7 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Key {
             assert(uMsg == message);
-            return Key.fromParams(uMsg, wParam, lParam);
+            return .fromParams(uMsg, wParam, lParam);
         }
     };
 
@@ -630,7 +630,7 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Key {
             assert(uMsg == message);
-            return Key.fromParams(uMsg, wParam, lParam);
+            return .fromParams(uMsg, wParam, lParam);
         }
     };
 
@@ -650,7 +650,7 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Key {
             assert(uMsg == message);
-            return Key.fromParams(uMsg, wParam, lParam);
+            return .fromParams(uMsg, wParam, lParam);
         }
     };
 
@@ -669,7 +669,7 @@ pub const Message = union {
 
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Key {
             assert(uMsg == message);
-            return Key.fromParams(uMsg, wParam, lParam);
+            return .fromParams(uMsg, wParam, lParam);
         }
     };
 
@@ -710,7 +710,7 @@ pub const Message = union {
             const w = asWords(wParam);
             const l_unsigned: usize = @bitCast(lParam);
             const l_dword: u32 = @truncate(l_unsigned);
-            return Character{
+            return .{
                 .codepoint = w.low,
                 .keystroke = @bitCast(l_dword),
             };
@@ -741,7 +741,7 @@ pub const Message = union {
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) CaptureChanged {
             assert(uMsg == message);
             _ = wParam;
-            return CaptureChanged{
+            return .{
                 .gained = @ptrFromInt(@as(usize, @bitCast(lParam))),
             };
         }
@@ -816,7 +816,7 @@ pub const Message = union {
             );
             const w = asWords(wParam);
             const l = asWords(lParam);
-            return Mouse{
+            return .{
                 .state = @bitCast(w.low),
                 .x = @bitCast(l.low),
                 .y = @bitCast(l.high),
@@ -867,7 +867,7 @@ pub const Message = union {
             );
             const w = asWords(wParam);
             const l = asWords(lParam);
-            return MouseXButton{
+            return .{
                 .state = @bitCast(w.low),
                 .button = @enumFromInt(w.high),
                 .x = @bitCast(l.low),
@@ -909,7 +909,7 @@ pub const Message = union {
             assert(uMsg == WM.MOUSEWHEEL or uMsg == WM.MOUSEHWHEEL);
             const w = asWords(wParam);
             const l = asWords(lParam);
-            return MouseWheel{
+            return .{
                 .state = @bitCast(w.low),
                 .rotation = @bitCast(w.high),
                 .x = @bitCast(l.low),
@@ -941,7 +941,7 @@ pub const Message = union {
             assert(uMsg == message);
             _ = wParam;
             const l = asWords(lParam);
-            return HitTest{
+            return .{
                 .x = @bitCast(l.low),
                 .y = @bitCast(l.high),
             };
