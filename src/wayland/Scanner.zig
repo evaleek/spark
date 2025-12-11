@@ -120,7 +120,7 @@ pub const SourceInvalidError = enum {
     empty_tag_name,
     unvalued_attribute,
     invalid_forward_slash,
-    forward_slash_in_attribute_name,
+    invalid_attribute_name_char,
     double_open_bracket,
     invalid_before_attribute_value,
     equals_before_attribute_name,
@@ -145,9 +145,9 @@ pub fn logSourceInvalidErr(scanner: Scanner, comptime logFn: anytype, file_path:
                 "{s}:{d}:{d}: expected \'>\' after \'/\', found \'{c}\'",
                 .{ file_path, scanner.line, scanner.column, scanner.last_byte.? },
             ),
-            .forward_slash_in_attribute_name => logFn(
-                "{s}:{d}:{d}: invalid character \'/\' in attribute name",
-                .{ file_path, scanner.line, scanner.column },
+            .invalid_attribute_name_char => logFn(
+                "{s}:{d}:{d}: invalid character \'{c}\' in attribute name",
+                .{ file_path, scanner.line, scanner.column, scanner.last_byte.? },
             ),
             .double_open_bracket => logFn(
                 "{s}:{d}:{d}: encountered \'<\' while parsing tag",
@@ -178,6 +178,7 @@ attribute_value_buffer: ByteArrayList,
 text_literal_buffer: ByteArrayList,
 last_opening_was_literal_text_tag: bool,
 last_byte: ?u8,
+last_last_byte: ?u8,
 line: u32,
 column: u32,
 source_invalid_err: ?SourceInvalidError,
@@ -190,6 +191,7 @@ pub fn init(allocator: Allocator) Allocator.Error!Scanner {
         .text_literal_buffer = try .initCapacity(allocator, 512),
         .last_opening_was_literal_text_tag = undefined,
         .last_byte = undefined,
+        .last_last_byte = undefined,
         .line = undefined,
         .column = undefined,
         .source_invalid_err = null,
@@ -223,6 +225,7 @@ pub fn newStream(scanner: *Scanner) void {
     }
     scanner.last_opening_was_literal_text_tag = false;
     scanner.last_byte = null;
+    scanner.last_last_byte = null;
     scanner.line = 0;
     scanner.column = 0;
 }
@@ -237,6 +240,7 @@ const State = enum {
     end_tag,
     /// Literal text content (i.e. within a '<description> ...')
     text,
+    comment,
 };
 
 /// Parses `reader` until EOF,
@@ -245,7 +249,10 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
     parse: switch (State.plaintext) {
         .plaintext => {
             const char = try scanner.nextByte(reader) orelse return;
-            defer scanner.last_byte = char;
+            defer {
+                scanner.last_last_byte = scanner.last_byte;
+                scanner.last_byte = char;
+            }
             if (char == '<') {
                 assert(scanner.tag_name_buffer.items.len == 0);
                 continue :parse .tag_name;
@@ -256,11 +263,16 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
 
         .tag_name => {
             if (try scanner.nextByte(reader)) |char| {
-                defer scanner.last_byte = char;
+                defer {
+                    scanner.last_last_byte = scanner.last_byte;
+                    scanner.last_byte = char;
+                }
+
                 if (scanner.last_byte == '/' and char != '>') {
                     scanner.source_invalid_err = .invalid_forward_slash;
                     return error.InvalidWaylandXML;
                 }
+
                 switch (char) {
                     '<' => {
                         scanner.source_invalid_err = .double_open_bracket;
@@ -296,6 +308,41 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                         }
                     },
 
+                    '!' => {
+                        // Because '<' in tag_name is a parse error, we must have "<!"
+                        if (scanner.last_byte == '<') {
+                            continue :parse .tag_name;
+                        } else {
+                            scanner.source_invalid_err = .invalid_attribute_name_char;
+                            return error.InvalidWaylandXML;
+                        }
+                    },
+
+                    '-' => switch (scanner.last_byte.?) {
+                        '!' => {
+                            if (scanner.last_last_byte == '<') {
+                                continue :parse .tag_name;
+                            } else {
+                                scanner.source_invalid_err = .invalid_attribute_name_char;
+                                return error.InvalidWaylandXML;
+                            }
+                        },
+
+                        '-' => {
+                            if (scanner.last_last_byte == '!') {
+                                continue :parse .comment;
+                            } else {
+                                scanner.source_invalid_err = .invalid_attribute_name_char;
+                                return error.InvalidWaylandXML;
+                            }
+                        },
+
+                        else => {
+                            scanner.source_invalid_err = .invalid_attribute_name_char;
+                            return error.InvalidWaylandXML;
+                        },
+                    },
+
                     else => |c| {
                         try scanner.tag_name_buffer.append(allocator, c);
                         continue :parse .tag_name;
@@ -320,7 +367,10 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
 
         .end_tag => {
             if (try scanner.nextByte(reader)) |char| {
-                defer scanner.last_byte = char;
+                defer {
+                    scanner.last_last_byte = scanner.last_byte;
+                    scanner.last_byte = char;
+                }
                 switch (char) {
                     ' ', '\t', '\n', '\r',
                     std.ascii.control_code.vt,
@@ -349,7 +399,10 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
 
         .attribute_name => {
             if (try scanner.nextByte(reader)) |char| {
-                defer scanner.last_byte = char;
+                defer {
+                    scanner.last_last_byte = scanner.last_byte;
+                    scanner.last_byte = char;
+                }
                 switch (char) {
                     '<' => {
                         scanner.source_invalid_err = .double_open_bracket;
@@ -360,7 +413,7 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                         if (scanner.attribute_name_buffer.items.len == 0) {
                             continue :parse .tag_name;
                         } else {
-                            scanner.source_invalid_err = .forward_slash_in_attribute_name;
+                            scanner.source_invalid_err = .invalid_attribute_name_char;
                             return error.InvalidWaylandXML;
                         }
                     },
@@ -417,7 +470,10 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
 
         .attribute_sep => {
             if (try scanner.nextByte(reader)) |char| {
-                defer scanner.last_byte = char;
+                defer {
+                    scanner.last_last_byte = scanner.last_byte;
+                    scanner.last_byte = char;
+                }
                 switch (char) {
                     ' ', '\t', '\n', '\r',
                     std.ascii.control_code.vt,
@@ -439,7 +495,10 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
 
         .attribute_value => {
             if (try scanner.nextByte(reader)) |char| {
-                defer scanner.last_byte = char;
+                defer {
+                    scanner.last_last_byte = scanner.last_byte;
+                    scanner.last_byte = char;
+                }
                 switch (char) {
                     else => |c| {
                         try scanner.attribute_value_buffer.append(allocator, c);
@@ -459,7 +518,10 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
 
         .text => {
             if (try scanner.nextByte(reader)) |char| {
-                defer scanner.last_byte = char;
+                defer {
+                    scanner.last_last_byte = scanner.last_byte;
+                    scanner.last_byte = char;
+                }
                 switch (char) {
                     else => |c| {
                         try scanner.text_literal_buffer.append(allocator, c);
@@ -471,6 +533,24 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                         continue :parse .tag_name;
                     },
                 }
+            } else {
+                scanner.source_invalid_err = .broken_tag;
+                return error.InvalidWaylandXML;
+            }
+        },
+
+        .comment => {
+            if (try scanner.nextByte(reader)) |char| {
+                defer {
+                    scanner.last_last_byte = scanner.last_byte;
+                    scanner.last_byte = char;
+                }
+
+                continue :parse if (
+                    char == '>' and
+                    scanner.last_byte == '-' and
+                    scanner.last_last_byte == '-'
+                ) .plaintext else .comment;
             } else {
                 scanner.source_invalid_err = .broken_tag;
                 return error.InvalidWaylandXML;
@@ -506,10 +586,6 @@ fn pushEmptyElement(scanner: *Scanner, writer: *Io.Writer) !void {
 
 /// A beginning element tag ('<TAGNAME>')
 fn pushStartElement(scanner: *Scanner, writer: *Io.Writer) !void {
-    //scanner.last_opening_was_literal_text_tag = mem.eql(u8,
-    //    "description",
-    //    scanner.tag_name_buffer.items,
-    //);
     scanner.last_opening_was_literal_text_tag =
         for (literal_text_tags) |tag_name| {
             if (mem.eql(u8, tag_name, scanner.tag_name_buffer.items)) break true;
