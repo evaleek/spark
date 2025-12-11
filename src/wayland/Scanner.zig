@@ -1,7 +1,7 @@
 //! Parses Wayland protocol XML into Zig source
 //! imported and consumed by the Spark library.
 //! This module is both a valid root for an executable
-//! and the type of the object used to parse and write.
+//! and the object for parsing and writing.
 
 /// A file path argument to this executable with this prefix
 /// will be written to as the output sink.
@@ -79,9 +79,9 @@ pub fn main() !void {
                     return error.ReadFailed;
                 }
             },
-            error.InvalidWaylandXML => |e| {
+            error.InvalidWaylandXML => {
                 scanner.logSourceInvalidErr(std.log.err, "stdin");
-                return e;
+                return error.ProtocolXMLParseFailure;
             },
         };
     } else for (in_file_list.items) |path| {
@@ -101,9 +101,9 @@ pub fn main() !void {
                     return error.ReadFailed;
                 }
             },
-            error.InvalidWaylandXML => |e| {
+            error.InvalidWaylandXML => {
                 scanner.logSourceInvalidErr(std.log.err, path);
-                return e;
+                return error.ProtocolXMLParseFailure;
             },
         };
         // Don't try to continue with other files after one file failed,
@@ -175,8 +175,8 @@ pub const Error = error{ WriteFailed, ReadFailed, InvalidWaylandXML } || Allocat
 tag_name_buffer: ByteArrayList,
 attribute_name_buffer: ByteArrayList,
 attribute_value_buffer: ByteArrayList,
-description_buffer: ByteArrayList,
-last_opening_was_description: bool,
+text_literal_buffer: ByteArrayList,
+last_opening_was_literal_text_tag: bool,
 last_byte: ?u8,
 line: u32,
 column: u32,
@@ -187,8 +187,8 @@ pub fn init(allocator: Allocator) Allocator.Error!Scanner {
         .tag_name_buffer = try .initCapacity(allocator, 64),
         .attribute_name_buffer = try .initCapacity(allocator, 64),
         .attribute_value_buffer = try .initCapacity(allocator, 128),
-        .description_buffer = try .initCapacity(allocator, 512),
-        .last_opening_was_description = undefined,
+        .text_literal_buffer = try .initCapacity(allocator, 512),
+        .last_opening_was_literal_text_tag = undefined,
         .last_byte = undefined,
         .line = undefined,
         .column = undefined,
@@ -197,7 +197,7 @@ pub fn init(allocator: Allocator) Allocator.Error!Scanner {
 }
 
 pub fn deinit(scanner: *Scanner, allocator: Allocator) void {
-    scanner.description_buffer.deinit(allocator);
+    scanner.text_literal_buffer.deinit(allocator);
     scanner.attribute_value_buffer.deinit(allocator);
     scanner.attribute_name_buffer.deinit(allocator);
     scanner.tag_name_buffer.deinit(allocator);
@@ -217,11 +217,11 @@ pub fn newStream(scanner: *Scanner) void {
         std.log.err("discarding incomplete attribute value \"{s}\"", .{ scanner.attribute_value_buffer.items });
         scanner.attribute_value_buffer.clearRetainingCapacity();
     }
-    if (scanner.description_buffer.items.len != 0) {
-        std.log.err("discarding incomplete description \"{s}\"", .{ scanner.description_buffer.items });
-        scanner.description_buffer.clearRetainingCapacity();
+    if (scanner.text_literal_buffer.items.len != 0) {
+        std.log.err("discarding incomplete literal text \"{s}\"", .{ scanner.text_literal_buffer.items });
+        scanner.text_literal_buffer.clearRetainingCapacity();
     }
-    scanner.last_opening_was_description = false;
+    scanner.last_opening_was_literal_text_tag = false;
     scanner.last_byte = null;
     scanner.line = 0;
     scanner.column = 0;
@@ -287,8 +287,8 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                             continue :parse .plaintext;
                         } else {
                             try scanner.pushStartElement(writer);
-                            if (scanner.wantsStartDescription()) {
-                                assert(scanner.description_buffer.items.len == 0);
+                            if (scanner.last_opening_was_literal_text_tag) {
+                                assert(scanner.text_literal_buffer.items.len == 0);
                                 continue :parse .text;
                             } else {
                                 continue :parse .plaintext;
@@ -381,8 +381,8 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                             continue :parse .plaintext;
                         } else {
                             try scanner.pushStartElement(writer);
-                            if (scanner.wantsStartDescription()) {
-                                assert(scanner.description_buffer.items.len == 0);
+                            if (scanner.last_opening_was_literal_text_tag) {
+                                assert(scanner.text_literal_buffer.items.len == 0);
                                 continue :parse .text;
                             } else {
                                 continue :parse .plaintext;
@@ -462,12 +462,12 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                 defer scanner.last_byte = char;
                 switch (char) {
                     else => |c| {
-                        try scanner.description_buffer.append(allocator, c);
+                        try scanner.text_literal_buffer.append(allocator, c);
                         continue :parse .text;
                     },
 
                     '<' => {
-                        try scanner.pushDescription(writer);
+                        try scanner.pushLiteralText(writer);
                         continue :parse .tag_name;
                     },
                 }
@@ -506,15 +506,24 @@ fn pushEmptyElement(scanner: *Scanner, writer: *Io.Writer) !void {
 
 /// A beginning element tag ('<TAGNAME>')
 fn pushStartElement(scanner: *Scanner, writer: *Io.Writer) !void {
-    scanner.last_opening_was_description = mem.eql(u8,
-        "description",
-        scanner.tag_name_buffer.items,
-    );
+    //scanner.last_opening_was_literal_text_tag = mem.eql(u8,
+    //    "description",
+    //    scanner.tag_name_buffer.items,
+    //);
+    scanner.last_opening_was_literal_text_tag =
+        for (literal_text_tags) |tag_name| {
+            if (mem.eql(u8, tag_name, scanner.tag_name_buffer.items)) break true;
+        } else false;
 
     // TODO
     try writer.print("<{s}>\n", .{ scanner.tag_name_buffer.items });
     scanner.tag_name_buffer.clearRetainingCapacity();
 }
+
+pub const literal_text_tags = [_][:0]const u8 {
+    "description",
+    "copyright",
+};
 
 /// An ending element tag ('</TAGNAME>')
 fn pushEndElement(scanner: *Scanner, writer: *Io.Writer) !void {
@@ -537,16 +546,10 @@ fn pushAttributeValue(scanner: *Scanner, writer: *Io.Writer) !void {
     scanner.attribute_value_buffer.clearRetainingCapacity();
 }
 
-fn pushDescription(scanner: *Scanner, writer: *Io.Writer) !void {
+fn pushLiteralText(scanner: *Scanner, writer: *Io.Writer) !void {
     // TODO
-    try writer.print("description: \"{s}\"\n", .{ scanner.description_buffer.items });
-    scanner.description_buffer.clearRetainingCapacity();
-}
-
-/// Whether to begin parsing text literally
-/// (whether the last pushed tag was 'description')
-fn wantsStartDescription(scanner: Scanner) bool {
-    return scanner.last_opening_was_description;
+    try writer.print("literal text: \"{s}\"\n", .{ scanner.text_literal_buffer.items });
+    scanner.text_literal_buffer.clearRetainingCapacity();
 }
 
 fn isNewline(char: u8, last_char: u8) bool {
