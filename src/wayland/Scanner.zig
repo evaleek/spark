@@ -69,7 +69,8 @@ pub fn main() !void {
         var reader = Io.File.stdin().reader(io, &read_buffer);
         scanner.newStream();
         scanner.stream(&writer.interface, &reader.interface, allocator) catch |err| switch (err) {
-            error.OutOfMemory => |e| return e,
+            error.OutOfMemory,
+            error.UnsupportedEncoding => |e| return e,
             error.WriteFailed => return writer.err orelse error.WriteFailedMissingError,
             error.ReadFailed => {
                 if (reader.err) |e| {
@@ -91,7 +92,8 @@ pub fn main() !void {
         var reader = file.reader(io, &read_buffer);
         scanner.newStream();
         scanner.stream(&writer.interface, &reader.interface, allocator) catch |err| switch (err) {
-            error.OutOfMemory => |e| return e,
+            error.OutOfMemory,
+            error.UnsupportedEncoding, => |e| return e,
             error.WriteFailed => return writer.err orelse error.WriteFailedMissingError,
             error.ReadFailed => {
                 if (reader.err) |e| {
@@ -124,6 +126,10 @@ pub const SourceInvalidError = enum {
     double_open_bracket,
     invalid_before_attribute_value,
     equals_before_attribute_name,
+    invalid_declaration_question_mark,
+    double_declaration,
+    invalid_declaration_name,
+    invalid_declaration_attributes,
 };
 
 pub fn logSourceInvalidErr(scanner: Scanner, comptime logFn: anytype, file_path: []const u8) void {
@@ -161,26 +167,52 @@ pub fn logSourceInvalidErr(scanner: Scanner, comptime logFn: anytype, file_path:
                 "{s}:{d}:{d}: expected attribute name, found \'=\'",
                 .{ file_path, scanner.line, scanner.column },
             ),
+            .invalid_declaration_question_mark => logFn(
+                "{s}:{d}:{d}: invalid token \'?{c}\' in declaration tag",
+                .{ file_path, scanner.line, scanner.column, scanner.last_byte.? },
+            ),
+            .double_declaration => logFn(
+                "{s}:{d}:{d}: encountered second XML declaration",
+                .{ file_path, scanner.line, scanner.column },
+            ),
+            .invalid_declaration_name => logFn(
+                "{s}:{d}:{d}: expected declaration tag name \'{s}\', found \'{s}\'",
+                .{ file_path, scanner.line, scanner.column, XMLDeclaration.tag_name, scanner.tag_name_buffer.items },
+            ),
+            .invalid_declaration_attributes => logFn(
+                "{s}:{d}:{d}: invalid attributes for \'<?xml?>\' tag",
+                .{ file_path, scanner.line, scanner.column },
+            ),
         }
     } else {
         logFn(
-            "{s}:{d}:{d}: unspecified error (seeing this is a scanner bug)",
+            "{s}:{d}:{d}: unspecified error (seeing this is a bug)",
             .{ file_path, scanner.line, scanner.column },
         );
     }
 }
 
-pub const Error = error{ WriteFailed, ReadFailed, InvalidWaylandXML } || Allocator.Error;
+pub const Error = error{
+    WriteFailed,
+    ReadFailed,
+    InvalidWaylandXML,
+    UnsupportedEncoding,
+} || Allocator.Error;
 
 tag_name_buffer: ByteArrayList,
 attribute_name_buffer: ByteArrayList,
 attribute_value_buffer: ByteArrayList,
 text_literal_buffer: ByteArrayList,
+attribute_names: StringList,
+attribute_values: StringList,
 last_opening_was_literal_text_tag: bool,
 last_byte: ?u8,
 last_last_byte: ?u8,
+first_tag: bool,
 line: u32,
 column: u32,
+reading_declaration: bool,
+xml_declaration: ?XMLDeclaration,
 source_invalid_err: ?SourceInvalidError,
 
 pub fn init(allocator: Allocator) Allocator.Error!Scanner {
@@ -189,11 +221,16 @@ pub fn init(allocator: Allocator) Allocator.Error!Scanner {
         .attribute_name_buffer = try .initCapacity(allocator, 64),
         .attribute_value_buffer = try .initCapacity(allocator, 128),
         .text_literal_buffer = try .initCapacity(allocator, 512),
+        .attribute_names = try .create(allocator),
+        .attribute_values = try .create(allocator),
         .last_opening_was_literal_text_tag = undefined,
         .last_byte = undefined,
         .last_last_byte = undefined,
         .line = undefined,
         .column = undefined,
+        .first_tag = undefined,
+        .reading_declaration = undefined,
+        .xml_declaration = undefined,
         .source_invalid_err = null,
     };
 }
@@ -203,6 +240,8 @@ pub fn deinit(scanner: *Scanner, allocator: Allocator) void {
     scanner.attribute_value_buffer.deinit(allocator);
     scanner.attribute_name_buffer.deinit(allocator);
     scanner.tag_name_buffer.deinit(allocator);
+    scanner.attribute_names.deinit(allocator);
+    scanner.attribute_values.deinit(allocator);
     scanner.* = undefined;
 }
 
@@ -223,12 +262,37 @@ pub fn newStream(scanner: *Scanner) void {
         std.log.err("discarding incomplete literal text \"{s}\"", .{ scanner.text_literal_buffer.items });
         scanner.text_literal_buffer.clearRetainingCapacity();
     }
+    if (scanner.attribute_names.strings.items.len != 0 or scanner.attribute_names.concatenated.items.len != 0) {
+        std.log.err("discarding unattributed {d} attribute names", .{ scanner.attribute_names.strings.items.len });
+        scanner.attribute_names.clear();
+    }
+    if (scanner.attribute_values.strings.items.len != 0 or scanner.attribute_values.concatenated.items.len != 0) {
+        std.log.err("discarding unattributed {d} attribute values", .{ scanner.attribute_values.strings.items.len });
+        scanner.attribute_names.clear();
+    }
     scanner.last_opening_was_literal_text_tag = false;
     scanner.last_byte = null;
     scanner.last_last_byte = null;
+    scanner.first_tag = false;
     scanner.line = 0;
     scanner.column = 0;
+    scanner.reading_declaration = false;
+    scanner.xml_declaration = null;
 }
+
+pub const XMLDeclaration = struct {
+    version_major: u8,
+    version_minor: u8,
+    encoding: ?Encoding,
+    standalone: ?bool,
+
+    /// Encodings supported by this parser
+    pub const Encoding = enum { @"UTF-8" };
+
+    /// The name expected of a '<? ... ?>' tag
+    pub const tag_name = "xml";
+
+};
 
 const State = enum {
     /// Plain text outside of any tags
@@ -253,6 +317,26 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                 scanner.last_last_byte = scanner.last_byte;
                 scanner.last_byte = char;
             }
+
+            // Check for byte order mark
+            if (scanner.line == 0) {
+                if (scanner.column == 2) {
+                    if (char == 0xFE and scanner.last_byte == 0xFF) {
+                        std.log.err("encountered BOM \'FF FE\' (UTF-16 Little Endian)", .{});
+                        return error.UnsupportedEncoding;
+                    } else if (char == 0xFF and scanner.last_byte == 0xFE) {
+                        std.log.err("encountered BOM \'FE FF\' (UTF-16 Big Endian)", .{});
+                        return error.UnsupportedEncoding;
+                    }
+                } else if (scanner.column == 3) {
+                    if (char == 0xBF and scanner.last_byte == 0xBB and scanner.last_last_byte == 0xEF) {
+                        // UTF-8 BOM
+                        // We already assume this and fail otherwise
+                    }
+                }
+            }
+            // Now we can assume UTF-8 encoding unless another is declared
+
             if (char == '<') {
                 assert(scanner.tag_name_buffer.items.len == 0);
                 continue :parse .tag_name;
@@ -272,6 +356,13 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                     scanner.source_invalid_err = .invalid_forward_slash;
                     return error.InvalidWaylandXML;
                 }
+
+                if (scanner.last_byte == '?' and char != '>' and !scanner.reading_declaration) {
+                    scanner.source_invalid_err = .invalid_declaration_question_mark;
+                    return error.InvalidWaylandXML;
+                }
+
+                defer scanner.first_tag = true;
 
                 switch (char) {
                     '<' => {
@@ -297,6 +388,9 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                         if (scanner.last_byte == '/') {
                             try scanner.pushEmptyElement(writer);
                             continue :parse .plaintext;
+                        } else if (scanner.last_byte == '?') {
+                            try scanner.pushDeclaration();
+                            continue :parse .plaintext;
                         } else {
                             try scanner.pushStartElement(writer);
                             if (scanner.last_opening_was_literal_text_tag) {
@@ -305,6 +399,26 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                             } else {
                                 continue :parse .plaintext;
                             }
+                        }
+                    },
+
+                    '?' => {
+                        if (
+                            scanner.last_byte == '<' and
+                            scanner.xml_declaration == null and
+                            !scanner.first_tag
+                        ) {
+                            scanner.reading_declaration = true;
+                            continue :parse .tag_name;
+                        } else if (
+                            scanner.xml_declaration == null and
+                            scanner.reading_declaration
+                        ) {
+                            scanner.reading_declaration = false;
+                            continue :parse .tag_name;
+                        } else {
+                            scanner.source_invalid_err = .invalid_attribute_name_char;
+                            return error.InvalidWaylandXML;
                         }
                     },
 
@@ -443,6 +557,19 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                         }
                     },
 
+                    '?' => {
+                        if (
+                            scanner.xml_declaration == null and
+                            scanner.reading_declaration
+                        ) {
+                            scanner.reading_declaration = false;
+                            continue :parse .tag_name;
+                        } else {
+                            scanner.source_invalid_err = .invalid_attribute_name_char;
+                            return error.InvalidWaylandXML;
+                        }
+                    },
+
                     ' ', '\t', '\n', '\r',
                     std.ascii.control_code.vt,
                     std.ascii.control_code.ff => continue :parse .attribute_name,
@@ -457,7 +584,7 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                             scanner.source_invalid_err = .equals_before_attribute_name;
                             return error.InvalidWaylandXML;
                         } else {
-                            try scanner.pushAttribute(writer);
+                            try scanner.pushAttribute(allocator);
                             continue :parse .attribute_sep;
                         }
                     },
@@ -506,7 +633,7 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                     },
 
                     '"' => {
-                        try scanner.pushAttributeValue(writer);
+                        try scanner.pushAttributeValue(allocator);
                         continue :parse .attribute_name;
                     },
                 }
@@ -581,7 +708,19 @@ fn nextByte(scanner: *Scanner, reader: *Io.Reader) !?u8 {
 fn pushEmptyElement(scanner: *Scanner, writer: *Io.Writer) !void {
     // TODO
     try writer.print("<{s}/>\n", .{ scanner.tag_name_buffer.items });
+    for (
+        scanner.attribute_names.strings.items,
+        scanner.attribute_values.strings.items,
+    ) |name_entry, value_entry| {
+        try writer.print("  {s}=\"{s}\"\n", .{
+            scanner.attribute_names.stringFromEntry(name_entry),
+            scanner.attribute_values.stringFromEntry(value_entry),
+        });
+    }
+
     scanner.tag_name_buffer.clearRetainingCapacity();
+    scanner.attribute_names.clear();
+    scanner.attribute_values.clear();
 }
 
 /// A beginning element tag ('<TAGNAME>')
@@ -593,7 +732,19 @@ fn pushStartElement(scanner: *Scanner, writer: *Io.Writer) !void {
 
     // TODO
     try writer.print("<{s}>\n", .{ scanner.tag_name_buffer.items });
+    for (
+        scanner.attribute_names.strings.items,
+        scanner.attribute_values.strings.items,
+    ) |name_entry, value_entry| {
+        try writer.print("  {s}=\"{s}\"\n", .{
+            scanner.attribute_names.stringFromEntry(name_entry),
+            scanner.attribute_values.stringFromEntry(value_entry),
+        });
+    }
+
     scanner.tag_name_buffer.clearRetainingCapacity();
+    scanner.attribute_names.clear();
+    scanner.attribute_values.clear();
 }
 
 pub const literal_text_tags = [_][:0]const u8 {
@@ -609,16 +760,16 @@ fn pushEndElement(scanner: *Scanner, writer: *Io.Writer) !void {
 }
 
 /// A tag attribute (ATTRIBUTE of '<TAGNAME ATTRIBUTE="VALUE"'(/)>)
-fn pushAttribute(scanner: *Scanner, writer: *Io.Writer) !void {
-    // TODO
-    try writer.print("{s}=", .{ scanner.attribute_name_buffer.items });
+fn pushAttribute(scanner: *Scanner, allocator: Allocator) !void {
+    assert(scanner.attribute_names.strings.items.len == scanner.attribute_values.strings.items.len);
+    try scanner.attribute_names.add(allocator, scanner.attribute_name_buffer.items);
     scanner.attribute_name_buffer.clearRetainingCapacity();
 }
 
 /// A tag attribute value (VALUE of '<TAGNAME ATTRIBUTE="VALUE"'(/)>)
-fn pushAttributeValue(scanner: *Scanner, writer: *Io.Writer) !void {
-    // TODO
-    try writer.print("\"{s}\"\n", .{ scanner.attribute_value_buffer.items });
+fn pushAttributeValue(scanner: *Scanner, allocator: Allocator) !void {
+    assert(scanner.attribute_names.strings.items.len == scanner.attribute_values.strings.items.len + 1);
+    try scanner.attribute_values.add(allocator, scanner.attribute_value_buffer.items);
     scanner.attribute_value_buffer.clearRetainingCapacity();
 }
 
@@ -628,9 +779,139 @@ fn pushLiteralText(scanner: *Scanner, writer: *Io.Writer) !void {
     scanner.text_literal_buffer.clearRetainingCapacity();
 }
 
+fn pushDeclaration(scanner: *Scanner) !void {
+    if (scanner.xml_declaration == null) {
+        if (mem.eql(u8, XMLDeclaration.tag_name, scanner.tag_name_buffer.items)) {
+            assert(scanner.attribute_names.strings.items.len == scanner.attribute_values.strings.items.len);
+            const attribute_count = scanner.attribute_names.strings.items.len;
+
+            errdefer { scanner.source_invalid_err = .invalid_declaration_attributes; }
+
+            var version: ?[2]u8 = null;
+            var encoding: ?XMLDeclaration.Encoding = null;
+            var standalone: ?bool = null;
+
+            if (attribute_count >= 1 and mem.eql(u8,
+                "version",
+                scanner.attribute_names.stringFromEntry(scanner.attribute_names.strings.items[0]),
+            )) {
+                const major_string, const minor_string = mem.cutScalar(u8,
+                    scanner.attribute_values.stringFromEntry(scanner.attribute_values.strings.items[0]),
+                    '.',
+                ) orelse return error.InvalidWaylandXML;
+                const major: u8 = fmt.parseUnsigned(u8, major_string, 10)
+                    catch return error.InvalidWaylandXML;
+                const minor: u8 = fmt.parseUnsigned(u8, minor_string, 10)
+                    catch return error.InvalidWaylandXML;
+                version = .{ major, minor };
+            } else {
+                return error.InvalidWaylandXML;
+            }
+
+            for (1..attribute_count) |attribute_index| {
+                const name = scanner.attribute_names.stringFromEntry(
+                    scanner.attribute_names.strings.items[attribute_index]);
+                const value = scanner.attribute_values.stringFromEntry(
+                    scanner.attribute_values.strings.items[attribute_index]);
+
+                if (mem.eql(u8, "encoding", name)) {
+                    if (encoding == null) {
+                        encoding = inline for (@typeInfo(XMLDeclaration.Encoding).@"enum".fields) |field| {
+                            if (mem.eql(u8, field.name, value))
+                                break @field(XMLDeclaration.Encoding, field.name);
+                        } else return error.UnsupportedEncoding;
+                    } else {
+                        return error.InvalidWaylandXML;
+                    }
+                } else if (mem.eql(u8, "standalone", name)) {
+                    if (standalone == null) {
+                        if (mem.eql(u8, "yes", value)) {
+                            standalone = true;
+                        } else if (mem.eql(u8, "no", value)) {
+                            standalone = false;
+                        } else {
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        return error.InvalidWaylandXML;
+                    }
+                } else {
+                    return error.InvalidWaylandXML;
+                }
+            }
+
+            scanner.xml_declaration = .{
+                .version_major = version.?[0],
+                .version_minor = version.?[1],
+                .encoding = encoding,
+                .standalone = standalone,
+            };
+
+            scanner.tag_name_buffer.clearRetainingCapacity();
+            scanner.attribute_names.clear();
+            scanner.attribute_values.clear();
+        } else {
+            scanner.source_invalid_err = .invalid_declaration_name;
+            return error.InvalidWaylandXML;
+        }
+    } else {
+        scanner.source_invalid_err = .double_declaration;
+        return error.InvalidWaylandXML;
+    }
+}
+
 fn isNewline(char: u8, last_char: u8) bool {
     return char=='\r' or ( char=='\n' and last_char!='\r' );
 }
+
+/// A simple dynamic string list for collecting attribute names and values
+const StringList = struct {
+    strings: Strings,
+    concatenated: ByteArrayList,
+
+    pub const initial_total_byte_capacity = 512;
+    pub const initial_string_count_capacity = 16;
+
+    const Strings = std.ArrayList(StringEntry);
+    const StringEntry = struct { idx: usize, len: usize };
+
+    pub fn create(allocator: Allocator) Allocator.Error!StringList {
+        var list: StringList = undefined;
+        try list.init(allocator);
+        return list;
+    }
+
+    pub fn init(list: *StringList, allocator: Allocator) Allocator.Error!void {
+        list.concatenated = try .initCapacity(allocator, initial_total_byte_capacity);
+        list.strings = try .initCapacity(allocator, initial_string_count_capacity);
+    }
+
+    pub fn deinit(list: *StringList, allocator: Allocator) void {
+        list.concatenated.deinit(allocator);
+        list.strings.deinit(allocator);
+        list.* = undefined;
+    }
+
+    pub fn clear(list: *StringList) void {
+        list.concatenated.clearRetainingCapacity();
+        list.strings.clearRetainingCapacity();
+    }
+
+    pub fn add(list: *StringList, allocator: Allocator, string: []const u8) Allocator.Error!void {
+        const new_string: StringEntry = .{
+            .idx = list.concatenated.items.len,
+            .len = string.len,
+        };
+        try list.concatenated.appendSlice(allocator, string);
+        try list.strings.append(allocator, new_string);
+        assert(mem.eql(u8, string, list.concatenated.items[new_string.idx..][0..new_string.len]));
+    }
+
+    /// Assumes entry validity
+    pub fn stringFromEntry(list: StringList, entry: StringEntry) []const u8 {
+        return list.concatenated.items[entry.idx..][0..entry.len];
+    }
+};
 
 const Scanner = @This();
 
@@ -641,6 +922,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const mem = std.mem;
+const fmt = std.fmt;
 const log = std.log;
 
 const std = @import("std");
