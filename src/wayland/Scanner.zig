@@ -860,9 +860,402 @@ fn pushDeclaration(scanner: *Scanner) !void {
     }
 }
 
+pub const FinalizeError = error{ MissingAttribute } || Allocator.Error;
+
+pub const Protocol = struct {
+    name: []const u8,
+    copyright: ?[]const u8,
+    interfaces: []Interface,
+
+    /// Recursively deinit the nested parse objects.
+    /// Prefer instead to init and bulk-deinit this parse structure with an arena.
+    pub fn deinit(protocol: Protocol, allocator: Allocator) void {
+        if (protocol.copyright) |copyright| allocator.free(copyright);
+        for (protocol.interfaces) |interface| interface.deinit(allocator);
+        allocator.free(protocol.interfaces);
+    }
+
+    const Parsing = struct {
+        name: ?[]const u8,
+        copyright: ?[]const u8,
+        interfaces: std.ArrayList(Interface.Parsing),
+
+        pub fn init(allocator: Allocator) Allocator.Error!Parsing {
+            return .{
+                .name = null,
+                .copyright = null,
+                .interfaces = try .initCapacity(allocator, 64),
+            };
+        }
+
+        fn finalize(parsing: Parsing, allocator: Allocator) FinalizeError!Protocol {
+            const interfaces = try allocator.alloc(Interface, parsing.interfaces.items.len);
+            errdefer allocator.free(interfaces);
+            for (interfaces, parsing.interfaces.items) |*new, old| new.* = try old.finalize(allocator);
+            parsing.interfaces.deinit(allocator);
+            return .{
+                .name = parsing.name orelse return error.MissingAttribute,
+                .copyright = parsing.copyright,
+                .interfaces = interfaces,
+            };
+        }
+    };
+};
+
+pub const Interface = struct {
+    name: []const u8,
+    version: VersionNumber,
+    description_short: ?[]const u8,
+    description_long: ?[]const u8,
+    objects: []Interface.Object,
+
+    pub fn deinit(interface: Interface, allocator: Allocator) void {
+        for (interface.objects) |object| {
+            switch (object) {
+                inline else => |obj| obj.deinit(allocator),
+            }
+        }
+        if (interface.description_long) |description| allocator.free(description);
+        if (interface.description_short) |description| allocator.free(description);
+        allocator.free(interface.name);
+    }
+
+    const Parsing = struct {
+        name: ?[]const u8,
+        version: ?VersionNumber,
+        description_short: ?[]const u8,
+        description_long: ?[]const u8,
+        objects: std.ArrayList(Interface.Object.Parsing),
+
+        pub fn init(allocator: Allocator) Allocator.Error!Parsing {
+            return .{
+                .name = null,
+                .version = null,
+                .description_short = null,
+                .description_long = null,
+                .objects = try .initCapacity(allocator, 128),
+            };
+        }
+
+        fn finalize(parsing: Parsing, allocator: Allocator) FinalizeError!Interface {
+            const objects = try allocator.alloc(Interface.Object, parsing.objects.items.len);
+            errdefer allocator.free(objects);
+            for (objects, parsing.objects.items) |*new, old| new.* = switch (old) {
+                inline else => |obj, tag| @unionInit(
+                    Interface.Object,
+                    @tagName(tag),
+                    try obj.finalize(allocator),
+                ),
+            };
+            parsing.objects.deinit(allocator);
+            return .{
+                .name = parsing.name orelse return error.MissingAttribute,
+                .version = parsing.version orelse return error.MissingAttribute,
+                .description_short = parsing.description_short,
+                .description_long = parsing.description_long,
+                .objects = objects,
+            };
+        }
+    };
+
+    pub const ChildTag = enum { request, event, @"enum" };
+
+    pub const Object = union(ChildTag) {
+        request: Request,
+        event: Event,
+        @"enum": Enum,
+
+        const Parsing = union(ChildTag) {
+            request: Request.Parsing,
+            event: Event.Parsing,
+            @"enum": Enum.Parsing,
+        };
+    };
+};
+
+pub const Request = struct {
+    name: []const u8,
+    since: ?VersionNumber,
+    description_short: ?[]const u8,
+    description_long: ?[]const u8,
+    args: []Arg,
+
+    pub fn deinit(request: Request, allocator: Allocator) void {
+        for (request.args) |arg| arg.deinit(allocator);
+        if (request.description_long) |description| allocator.free(description);
+        if (request.description_short) |description| allocator.free(description);
+        allocator.free(request.name);
+    }
+
+    const Parsing = struct {
+        name: ?[]const u8,
+        since: ?VersionNumber,
+        description_short: ?[]const u8,
+        description_long: ?[]const u8,
+        args: std.ArrayList(Arg),
+
+        pub fn init(allocator: Allocator) Allocator.Error!Parsing {
+            return .{
+                .name = null,
+                .since = null,
+                .description_short = null,
+                .description_long = null,
+                .args = try .initCapacity(allocator, 16),
+            };
+        }
+
+        fn finalize(parsing: Parsing, allocator: Allocator) FinalizeError!Request {
+            return .{
+                .name = parsing.name orelse return error.MissingAttribute,
+                .since = parsing.since,
+                .description_short = parsing.description_short,
+                .description_long = parsing.description_long,
+                .args = try parsing.args.toOwnedSlice(allocator),
+            };
+        }
+    };
+};
+
+pub const Event = struct {
+    name: []const u8,
+    description_short: ?[]const u8,
+    description_long: ?[]const u8,
+    since: ?VersionNumber,
+    args: []Arg,
+
+    pub fn deinit(event: Event, allocator: Allocator) void {
+        for (event.args) |arg| arg.deinit(allocator);
+        if (event.description_long) |description| allocator.free(description);
+        if (event.description_short) |description| allocator.free(description);
+        allocator.free(event.name);
+    }
+
+    const Parsing = struct {
+        name: ?[]const u8,
+        since: ?VersionNumber,
+        description_short: ?[]const u8,
+        description_long: ?[]const u8,
+        args: std.ArrayList(Arg),
+
+        pub fn init(allocator: Allocator) Allocator.Error!Parsing {
+            return .{
+                .name = null,
+                .since = null,
+                .description_short = null,
+                .description_long = null,
+                .args = try .initCapacity(allocator, 16),
+            };
+        }
+
+        fn finalize(parsing: Parsing, allocator: Allocator) FinalizeError!Event {
+            return .{
+                .name = parsing.name orelse return error.MissingAttribute,
+                .since = parsing.since,
+                .description_short = parsing.description_short,
+                .description_long = parsing.description_long,
+                .args = try parsing.args.toOwnedSlice(allocator),
+            };
+        }
+    };
+};
+
+pub const Enum = struct {
+    name: []const u8,
+    since: ?VersionNumber,
+    description_short: ?[]const u8,
+    description_long: ?[]const u8,
+    bitfield: bool,
+    entries: []Entry,
+
+    pub fn deinit(@"enum": Enum, allocator: Allocator) void {
+        for (@"enum".entries) |entry| entry.deinit(allocator);
+        if (@"enum".description_long) |description| allocator.free(description);
+        if (@"enum".description_short) |description| allocator.free(description);
+        allocator.free(@"enum".name);
+    }
+
+    const Parsing = struct {
+        name: ?[]const u8,
+        since: ?VersionNumber,
+        description_short: ?[]const u8,
+        description_long: ?[]const u8,
+        bitfield: ?bool,
+        entries: std.ArrayList(Entry),
+
+        pub fn init(allocator: Allocator) Allocator.Error!Parsing {
+            return .{
+                .name = null,
+                .since = null,
+                .description_short = null,
+                .description_long = null,
+                .bitfield = null,
+                .entries = try .initCapacity(allocator, 32),
+            };
+        }
+
+        fn finalize(parsing: Parsing, allocator: Allocator) FinalizeError!Enum {
+            return .{
+                .name = parsing.name orelse return error.MissingAttribute,
+                .since = parsing.since,
+                .description_short = parsing.description_short,
+                .description_long = parsing.description_long,
+                .bitfield = parsing.bitfield orelse false,
+                .entries = try parsing.entries.toOwnedSlice(allocator),
+            };
+        }
+    };
+};
+
+pub const Arg = struct {
+    name: []const u8,
+    @"type": Type,
+    interface: ?[]const u8,
+    allow_null: ?bool,
+    summary: ?[]const u8,
+
+    pub fn deinit(arg: Arg, allocator: Allocator) void {
+        if (arg.summary) |summary| allocator.free(summary);
+        if (arg.interface) |interface| allocator.free(interface);
+        allocator.free(arg.name);
+    }
+
+    const Parsing = struct {
+        name: ?[]const u8,
+        @"type": ?Type,
+        interface: ?[]const u8,
+        allow_null: ?bool,
+        summary: ?[]const u8,
+
+        pub const init: Parsing = .{
+            .name = null,
+            .@"type" = null,
+            .interface = null,
+            .allow_null = null,
+            .summary = null,
+        };
+
+        fn finalize(parsing: Parsing) error{MissingAttribute}!Arg {
+            return .{
+                .name = parsing.name orelse return error.MissingAttribute,
+                .@"type" = parsing.@"type" orelse return error.MissingAttribute,
+                .interface = parsing.interface,
+                .allow_null = parsing.allow_null,
+                .summary = parsing.summary,
+            };
+        }
+    };
+
+    pub const Type = enum {
+        int,
+        uint,
+        fixed,
+        string,
+        object,
+        new_id,
+        array,
+        fd,
+
+        pub fn fromString(str: []const u8) ?Tag {
+            return name_map.get(str);
+        }
+
+        const name_map: std.StaticStringMap(Type) = .initComptime( make: {
+            const types = std.enums.values(Type);
+            var list: [types.len]struct { []const u8, Type } = undefined;
+            for (&list, types) |*kvs, @"type"| kvs.* = .{ @tagName(@"type", @"type" };
+            break :make list;
+        } );
+    };
+};
+
+pub const Entry = struct {
+    name: []const u8,
+    value: []const u8,
+    summary: ?[]const u8,
+
+    pub fn deinit(entry: Entry, allocator: Allocator) void {
+        if (entry.summary) |summary| allocator.free(summary);
+        allocator.free(entry.value);
+        allocator.free(entry.name);
+    }
+
+    const Parsing = struct {
+        name: ?[]const u8,
+        value: ?[]const u8,
+        summary: ?[]const u8,
+
+        pub const init: Parsing = .{
+            .name = null,
+            .value = null,
+            .summary = null,
+        };
+
+        fn finalize(parsing: Parsing) error{MissingAttribute}!Entry {
+            return .{
+                .name = parsing.name orelse return error.MissingAttribute,
+                .value = parsing.value orelse return error.MissingAttribute,
+                .summary = parsing.summary,
+            };
+        }
+    };
+};
+
+fn validateStartTag(scanner: *Scanner, tag: Tag) !void {
+    const top: ?Tag = scanner.tag_stack.getLastOrNull();
+    switch (tag) {
+        .protocol => {
+            if (top != null) {
+                scanner.source_invalid_err = .non_root_protocol;
+                return error.InvalidWaylandXML;
+            }
+        },
+        .interface => {
+            if (top != .protocol) {
+                scanner.source_invalid_err = .interface_not_protocol_child;
+                return error.InvalidWaylandXML;
+            }
+        },
+        .request, .event, .@"enum", .description => {
+            if (top != .interface) {
+                scanner.source_invalid_err = .interface_child_not;
+                return error.InvalidWaylandXML;
+            }
+        },
+        .arg => {
+            if (top != .request or top != .event) {
+                scanner.source_invalid_err = .invalid_arg_parent;
+                return error.InvalidWaylandXML;
+            }
+        },
+        .entry => {
+            if (top != .@"enum") {
+                scanner.source_invalid_err = .invalid_entry_parent;
+                return error.InvalidWaylandXML;
+            }
+        },
+    }
+}
+
+/// Protocol names seem to follow the same convention as Zig identifiers,
+/// so we will just validate and map them directly to the output namespaces.
+fn isValidName(name: []const u8) bool {
+    return name.len >= 1 and
+        ( std.ascii.isLower(name[0]) or name[0] == '_' ) and
+        ( for (name[1..]) |c| {
+            switch (c) {
+                '0'...'9', 'a'...'z', '_' => {},
+                else => break false,
+            }
+        } else true )
+    ;
+}
+
 fn isNewline(char: u8, last_char: u8) bool {
     return char=='\r' or ( char=='\n' and last_char!='\r' );
 }
+
+/// Integer type of parsed version strings
+pub const VersionNumber = u8;
 
 /// A simple dynamic string list for collecting attribute names and values
 const StringList = struct {
