@@ -1,7 +1,5 @@
-//! Parses Wayland protocol XML into Zig source
-//! imported and consumed by the Spark library.
-//! This module is both a valid root for an executable
-//! and the object for parsing and writing.
+//! Parses Wayland protocol XML into Zig source imported and consumed by the Spark library.
+//! This module is both an executable root and the object that parses and writes.
 
 /// A file path argument to this executable with this prefix
 /// will be written to as the output sink.
@@ -84,6 +82,7 @@ pub fn main() !void {
                 scanner.logSourceInvalidErr(std.log.err, "stdin");
                 return error.ProtocolXMLParseFailure;
             },
+            error.StreamIncomplete => return error.ProtocolXMLParseFailure,
         };
     } else for (in_file_list.items) |path| {
         read_buffer = undefined;
@@ -107,6 +106,7 @@ pub fn main() !void {
                 scanner.logSourceInvalidErr(std.log.err, path);
                 return error.ProtocolXMLParseFailure;
             },
+            error.StreamIncomplete => return error.ProtocolXMLParseFailure,
         };
         // Don't try to continue with other files after one file failed,
         // because we have probably now written incomplete and invalid source
@@ -120,6 +120,11 @@ pub fn main() !void {
 pub const SourceInvalidError = enum {
     broken_tag,
     empty_tag_name,
+    unsupported_tag,
+    clobber,
+    invalid_attributes,
+    invalid_name,
+    mismatched_tag_close,
     unvalued_attribute,
     invalid_forward_slash,
     invalid_attribute_name_char,
@@ -130,6 +135,15 @@ pub const SourceInvalidError = enum {
     double_declaration,
     invalid_declaration_name,
     invalid_declaration_attributes,
+    invalid_self_closing,
+    non_root_protocol,
+    interface_not_protocol_child,
+    interface_child_not,
+    invalid_arg_parent,
+    invalid_entry_parent,
+    invalid_description_parent,
+    invalid_entry_value,
+    missing_attribute_at_final,
 };
 
 pub fn logSourceInvalidErr(scanner: Scanner, comptime logFn: anytype, file_path: []const u8) void {
@@ -142,6 +156,26 @@ pub fn logSourceInvalidErr(scanner: Scanner, comptime logFn: anytype, file_path:
             .empty_tag_name => logFn(
                 "{s}:{d}:{d}: expected a tag name, found \'>\'",
                 .{ file_path, scanner.line, scanner.column },
+            ),
+            .unsupported_tag => logFn(
+                "{s}:{d}:{d}: unsupported tag name \'{s}\'",
+                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items }
+            ),
+            .clobber => logFn(
+                "{s}:{d}:{d}: double declaration of attribute",
+                .{ file_path, scanner.line, scanner.column },
+            ),
+            .invalid_attributes => logFn(
+                "{s}:{d}:{d}: invalid attributes for tag <{s}>",
+                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
+            ),
+            .invalid_name => logFn(
+                "{s}:{d}:{d}: invalid {s} name (expected ^[a-z_][a-z0-9_]*$)",
+                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
+            ),
+            .mismatched_tag_close => logFn(
+                "{s}:{d}:{d}: mismatched \'<{s}>\' closing tag",
+                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
             ),
             .unvalued_attribute => logFn(
                 "{s}:{d}:{d}: attribute \'{s}\' has no value",
@@ -183,6 +217,42 @@ pub fn logSourceInvalidErr(scanner: Scanner, comptime logFn: anytype, file_path:
                 "{s}:{d}:{d}: invalid attributes for \'<?xml?>\' tag",
                 .{ file_path, scanner.line, scanner.column },
             ),
+            .invalid_self_closing => logFn(
+                "{s}:{d}:{d}: <{s}/> is unsupported as a self-closing tag",
+                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
+            ),
+            .non_root_protocol => logFn(
+                "{s}:{d}:{d}: protocol tag must only appear at root level",
+                .{ file_path, scanner.line, scanner.column },
+            ),
+            .interface_not_protocol_child => logFn(
+                "{s}:{d}:{d}: <interface> tag must appear as child of <protocol>",
+                .{ file_path, scanner.line, scanner.column },
+            ),
+            .interface_child_not => logFn(
+                "{s}:{d}:{d}: <{s}> tag must appear as child of <interface>",
+                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
+            ),
+            .invalid_arg_parent => logFn(
+                "{s}:{d}:{d}: <arg> tag must appear as child of <request> or <event>",
+                .{ file_path, scanner.line, scanner.column },
+            ),
+            .invalid_entry_parent => logFn(
+                "{s}:{d}:{d}: <entry> tag must appear as child of <enum>",
+                .{ file_path, scanner.line, scanner.column },
+            ),
+            .invalid_description_parent => logFn(
+                "{s}:{d}:{d}: unsupported parent of <description> tag",
+                .{ file_path, scanner.line, scanner.column },
+            ),
+            .invalid_entry_value => logFn(
+                "{s}:{d}:{d}: <entry/> value is not a valid integer",
+                .{ file_path, scanner.line, scanner.column },
+            ),
+            .missing_attribute_at_final => logFn(
+                "{s}: uncaught missing attributes after parsing",
+                .{ file_path },
+            ),
         }
     } else {
         logFn(
@@ -192,13 +262,30 @@ pub fn logSourceInvalidErr(scanner: Scanner, comptime logFn: anytype, file_path:
     }
 }
 
-pub const Error = error{
-    WriteFailed,
-    ReadFailed,
-    InvalidWaylandXML,
-    UnsupportedEncoding,
-} || Allocator.Error;
+pub const Tag = enum {
+    copyright,
+    protocol,
+    interface,
+    description,
+    request,
+    event,
+    @"enum",
+    entry,
+    arg,
 
+    pub fn fromString(str: []const u8) ?Tag {
+        return name_map.get(str);
+    }
+
+    const name_map: std.StaticStringMap(Tag) = .initComptime( make: {
+        const tags = std.enums.values(Tag);
+        var list: [tags.len]struct { []const u8, Tag } = undefined;
+        for (&list, tags) |*kvs, tag| kvs.* = .{ @tagName(tag), tag };
+        break :make list;
+    } );
+};
+
+tag_stack: TagStack,
 tag_name_buffer: ByteArrayList,
 attribute_name_buffer: ByteArrayList,
 attribute_value_buffer: ByteArrayList,
@@ -217,6 +304,7 @@ source_invalid_err: ?SourceInvalidError,
 
 pub fn init(allocator: Allocator) Allocator.Error!Scanner {
     return .{
+        .tag_stack = try .initCapacity(allocator, 16),
         .tag_name_buffer = try .initCapacity(allocator, 64),
         .attribute_name_buffer = try .initCapacity(allocator, 64),
         .attribute_value_buffer = try .initCapacity(allocator, 128),
@@ -236,40 +324,22 @@ pub fn init(allocator: Allocator) Allocator.Error!Scanner {
 }
 
 pub fn deinit(scanner: *Scanner, allocator: Allocator) void {
+    scanner.attribute_values.deinit(allocator);
+    scanner.attribute_names.deinit(allocator);
     scanner.text_literal_buffer.deinit(allocator);
     scanner.attribute_value_buffer.deinit(allocator);
     scanner.attribute_name_buffer.deinit(allocator);
     scanner.tag_name_buffer.deinit(allocator);
-    scanner.attribute_names.deinit(allocator);
-    scanner.attribute_values.deinit(allocator);
+    scanner.tag_stack.deinit(allocator);
     scanner.* = undefined;
 }
 
 pub fn newStream(scanner: *Scanner) void {
-    if (scanner.tag_name_buffer.items.len != 0) {
-        std.log.err("discarding incomplete tag name \"{s}\"", .{ scanner.tag_name_buffer.items });
-        scanner.tag_name_buffer.clearRetainingCapacity();
-    }
-    if (scanner.attribute_name_buffer.items.len != 0) {
-        std.log.err("discarding incomplete attribute name \"{s}\"", .{ scanner.attribute_name_buffer.items });
-        scanner.attribute_name_buffer.clearRetainingCapacity();
-    }
-    if (scanner.attribute_value_buffer.items.len != 0) {
-        std.log.err("discarding incomplete attribute value \"{s}\"", .{ scanner.attribute_value_buffer.items });
-        scanner.attribute_value_buffer.clearRetainingCapacity();
-    }
-    if (scanner.text_literal_buffer.items.len != 0) {
-        std.log.err("discarding incomplete literal text \"{s}\"", .{ scanner.text_literal_buffer.items });
-        scanner.text_literal_buffer.clearRetainingCapacity();
-    }
-    if (scanner.attribute_names.strings.items.len != 0 or scanner.attribute_names.concatenated.items.len != 0) {
-        std.log.err("discarding unattributed {d} attribute names", .{ scanner.attribute_names.strings.items.len });
-        scanner.attribute_names.clear();
-    }
-    if (scanner.attribute_values.strings.items.len != 0 or scanner.attribute_values.concatenated.items.len != 0) {
-        std.log.err("discarding unattributed {d} attribute values", .{ scanner.attribute_values.strings.items.len });
-        scanner.attribute_names.clear();
-    }
+    assert(scanner.tag_stack.items.len == 0);
+    assert(scanner.tag_name_buffer.items.len == 0);
+    assert(scanner.attribute_name_buffer.items.len == 0);
+    assert(scanner.attribute_value_buffer.items.len == 0);
+    assert(scanner.text_literal_buffer.items.len == 0);
     scanner.last_opening_was_literal_text_tag = false;
     scanner.last_byte = null;
     scanner.last_last_byte = null;
@@ -291,8 +361,14 @@ pub const XMLDeclaration = struct {
 
     /// The name expected of a '<? ... ?>' tag
     pub const tag_name = "xml";
-
 };
+
+pub const ParseError = error{
+    ReadFailed,
+    InvalidWaylandXML,
+    UnsupportedEncoding,
+    StreamIncomplete,
+} || Allocator.Error;
 
 const State = enum {
     /// Plain text outside of any tags
@@ -307,41 +383,74 @@ const State = enum {
     comment,
 };
 
-/// Parses `reader` until EOF,
-/// writing completed sections to `writer` as they are parsed.
-pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocator: Allocator) Error!void {
+/// Parses `reader` to EOF,
+/// allocating a slice of nested protocol objects for the caller to free.
+pub fn parse(scanner: *Scanner, allocator: Allocator, reader: *Io.Reader) ParseError![]Protocol {
+    scanner.newStream();
+
+    var protocols: std.ArrayList(Protocol.Parsing) = try .initCapacity(allocator, 1);
+    errdefer protocols.deinit(allocator);
+
     parse: switch (State.plaintext) {
         .plaintext => {
-            const char = try scanner.nextByte(reader) orelse return;
-            defer {
-                scanner.last_last_byte = scanner.last_byte;
-                scanner.last_byte = char;
-            }
+            if (try scanner.nextByte(reader)) |char| {
+                defer {
+                    scanner.last_last_byte = scanner.last_byte;
+                    scanner.last_byte = char;
+                }
 
-            // Check for byte order mark
-            if (scanner.line == 0) {
-                if (scanner.column == 2) {
-                    if (char == 0xFE and scanner.last_byte == 0xFF) {
-                        std.log.err("encountered BOM \'FF FE\' (UTF-16 Little Endian)", .{});
-                        return error.UnsupportedEncoding;
-                    } else if (char == 0xFF and scanner.last_byte == 0xFE) {
-                        std.log.err("encountered BOM \'FE FF\' (UTF-16 Big Endian)", .{});
-                        return error.UnsupportedEncoding;
-                    }
-                } else if (scanner.column == 3) {
-                    if (char == 0xBF and scanner.last_byte == 0xBB and scanner.last_last_byte == 0xEF) {
-                        // UTF-8 BOM
-                        // We already assume this and fail otherwise
+                // Check for byte order mark
+                if (scanner.line == 0) {
+                    if (scanner.column == 2) {
+                        if (char == 0xFE and scanner.last_byte == 0xFF) {
+                            std.log.err("encountered BOM \'FF FE\' (UTF-16 Little Endian)", .{});
+                            return error.UnsupportedEncoding;
+                        } else if (char == 0xFF and scanner.last_byte == 0xFE) {
+                            std.log.err("encountered BOM \'FE FF\' (UTF-16 Big Endian)", .{});
+                            return error.UnsupportedEncoding;
+                        }
+                    } else if (scanner.column == 3) {
+                        if (char == 0xBF and scanner.last_byte == 0xBB and scanner.last_last_byte == 0xEF) {
+                            // UTF-8 BOM
+                            // We already assume this and fail otherwise
+                        }
                     }
                 }
-            }
-            // Now we can assume UTF-8 encoding unless another is declared
+                // Now we can assume UTF-8 encoding unless another is declared in <?xml>
 
-            if (char == '<') {
-                assert(scanner.tag_name_buffer.items.len == 0);
-                continue :parse .tag_name;
+                if (char == '<') {
+                    assert(scanner.tag_name_buffer.items.len == 0);
+                    continue :parse .tag_name;
+                } else {
+                    continue :parse .plaintext;
+                }
             } else {
-                continue :parse .plaintext;
+                if (
+                    scanner.tag_stack.items.len == 0 and
+                    scanner.tag_name_buffer.items.len == 0 and
+                    scanner.attribute_name_buffer.items.len == 0 and
+                    scanner.attribute_value_buffer.items.len == 0 and
+                    scanner.text_literal_buffer.items.len == 0 and
+                    scanner.attribute_names.strings.items.len == 0 and
+                    scanner.attribute_values.strings.items.len == 0
+                ) {
+                    const protocols_slice = try allocator.alloc(Protocol, protocols.items.len);
+                    errdefer allocator.free(protocols_slice);
+                    for (protocols_slice, protocols.items) |*new, old| {
+                        new.* = old.finalize(allocator) catch |err| switch (err) {
+                            error.OutOfMemory => |e| return e,
+                            error.MissingAttribute => return attr: {
+                                scanner.source_invalid_err = .missing_attribute_at_final;
+                                break :attr error.InvalidWaylandXML;
+                            },
+                        };
+                    }
+                    protocols.deinit(allocator);
+                    return protocols_slice;
+                } else {
+                    return error.StreamIncomplete;
+                }
+                ) error.StreamIncomplete else try protocols.finalize(allocator);
             }
         },
 
@@ -386,13 +495,13 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                         }
 
                         if (scanner.last_byte == '/') {
-                            try scanner.pushEmptyElement(writer);
+                            try scanner.pushEmptyElement(allocator, &protocols);
                             continue :parse .plaintext;
                         } else if (scanner.last_byte == '?') {
-                            try scanner.pushDeclaration();
+                            try scanner.pushDeclaration(allocator, &protocols);
                             continue :parse .plaintext;
                         } else {
-                            try scanner.pushStartElement(writer);
+                            try scanner.pushStartElement(allocator, &protocols);
                             if (scanner.last_opening_was_literal_text_tag) {
                                 assert(scanner.text_literal_buffer.items.len == 0);
                                 continue :parse .text;
@@ -423,7 +532,7 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                     },
 
                     '!' => {
-                        // Because '<' in tag_name is a parse error, we must have "<!"
+                        // Because '<' within tag_name is a parse error
                         if (scanner.last_byte == '<') {
                             continue :parse .tag_name;
                         } else {
@@ -500,7 +609,7 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                             scanner.source_invalid_err = .empty_tag_name;
                             return error.InvalidWaylandXML;
                         } else {
-                            try scanner.pushEndElement(writer);
+                            try scanner.pushEndElement(allocator, &protocols);
                             continue :parse .plaintext;
                         }
                     },
@@ -544,10 +653,10 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                         }
 
                         if (scanner.last_byte == '/') {
-                            try scanner.pushEmptyElement(writer);
+                            try scanner.pushEmptyElement(allocator, &protocols);
                             continue :parse .plaintext;
                         } else {
-                            try scanner.pushStartElement(writer);
+                            try scanner.pushStartElement(allocator, &protocols);
                             if (scanner.last_opening_was_literal_text_tag) {
                                 assert(scanner.text_literal_buffer.items.len == 0);
                                 continue :parse .text;
@@ -656,7 +765,6 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                     },
 
                     '<' => {
-                        try scanner.pushLiteralText(writer);
                         continue :parse .tag_name;
                     },
                 }
@@ -673,6 +781,7 @@ pub fn stream(scanner: *Scanner, writer: *Io.Writer, reader: *Io.Reader, allocat
                     scanner.last_byte = char;
                 }
 
+                // TODO this makes something like '<!-->' a valid comment (is it?)
                 continue :parse if (
                     char == '>' and
                     scanner.last_byte == '-' and
@@ -705,17 +814,337 @@ fn nextByte(scanner: *Scanner, reader: *Io.Reader) !?u8 {
 }
 
 /// An empty element tag ('<TAGNAME/>').
-fn pushEmptyElement(scanner: *Scanner, writer: *Io.Writer) !void {
-    // TODO
-    try writer.print("<{s}/>\n", .{ scanner.tag_name_buffer.items });
-    for (
-        scanner.attribute_names.strings.items,
-        scanner.attribute_values.strings.items,
-    ) |name_entry, value_entry| {
-        try writer.print("  {s}=\"{s}\"\n", .{
-            scanner.attribute_names.stringFromEntry(name_entry),
-            scanner.attribute_values.stringFromEntry(value_entry),
-        });
+fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.ArrayList(Protocol.Parsing)) !void {
+    const tag: Tag = .fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
+        scanner.source_invalid_err = .unsupported_tag;
+        break :no_tag error.InvalidWaylandXML;
+    };
+    assert(scanner.attribute_names.strings.items.len == scanner.attribute_values.strings.items.len) {
+    const attribute_count = scanner.attribute_names.strings.items.len;
+
+    const top: ?Tag = scanner.tag_stack.getLastOrNull();
+    try scanner.validateStartTag(top, tag);
+
+    switch (tag) {
+        .entry => {
+            var name: ?[]const u8 = null;
+            var value_attr: ?[]const u8 = null;
+            var summary: ?[]const u8 = null;
+            errdefer {
+                if (name) |n| allocator.free(n);
+                if (value_attr) |v| allocator.free(v);
+                if (summary) |s| allocator.free(s);
+            }
+
+            for (0..attribute_count) |attribute_index| {
+                const name = scanner.attribute_names.at(attribute_index).?;
+                const value = scanner.attribute_values.at(attribute_index).?;
+                if (mem.eql(u8, "name" , name) {
+                    if (name == null) {
+                        name = try allocator.dupe(u8, value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if (mem.eql(u8, "value", name)) {
+                    if (value_attr = null) {
+                        value_attr = try allocator.dupe(u8, value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if (mem.eql(u8, "summary", name)) {
+                    if (summary == null) {
+                        summary = try allocator.dupe(u8, value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+            if (name == null or value_attr == null) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+
+            if (!Entry.isValidValue(value_attr.?)) {
+                scanner.source_invalid_err = .invalid_entry_value;
+                return error.InvalidWaylandXML;
+            }
+
+            assert(top == .@"enum");
+            {
+                const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                const last_interface: *Interface.Parsing = &interfaces[interfaces.len-1];
+                const last: *Enum.Parsing = &last_interface.objects.items[last_interface.objects.items.len-1].@"enum";
+                try last.entries.append(allocator, .{
+                    .name = name.?,
+                    .value = value_attr.?,
+                    .summary = summary,
+                });
+            }
+        },
+
+        .arg => {
+            var name: ?[]const u8 = null;
+            var @"type": ?Arg.Type = null;
+            var interface: ?[]const u8 = null;
+            var allow_null: ?bool = null;
+            var summary: ?[]const u8 = null;
+            errdefer {
+                if (name) |n| allocator.free(n);
+                if (interface) |i| allocator.free(i);
+                if (summary) |s| allocator.free(s);
+            }
+
+            for (0..attribute_count) |attribute_index| {
+                const name = scanner.attribute_names.at(attribute_index).?;
+                const value = scanner.attribute_values.at(attribute_index).?;
+                if (mem.eql(u8, "name", name)) {
+                    if (name == null) {
+                        name = try allocator.dupe(u8, value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if (mem.eql(u8, "type", name)) {
+                    if (@"type" == null) {
+                        if (Arg.Type.fromString(value)) |t| {
+                            @"type" = t;
+                        } else {
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if (mem.eql(u8, "interface", name)) {
+                    if (interface == null) {
+                        interface = try allocator.dupe(u8, value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if (mem.eql(u8, "allow-null", name)) {
+                    if (allow_null == null) {
+                        if (mem.eql(u8, "true", value)) {
+                            allow_null = true;
+                        } else if (mem.eql(u8, "false", value)) {
+                            allow_null = false;
+                        } else {
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if (mem.eql(u8, "summary", name)) {
+                    if (summary == null) {
+                        summary = try allocator.dupe(u8, value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+
+            if (name == null or @"type" == null) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+
+            switch (top.?) {
+                inline .request, .event => |parent| {
+                    const Parsing: type = switch (parent) {
+                        .request => Request.Parsing,
+                        .event => Event.Parsing,
+                        else => unreachable,
+                    };
+                    const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                    const last_interface: *Interface.Parsing = &interfaces[interfaces.len-1];
+                    const last: *Parsing = &@field(
+                        last_interface.objects.items[last_interface.objects.items.len-1],
+                        @tagName(parent),
+                    );
+                    try last.args.append(allocator, .{
+                        .name = name.?,
+                        .@"type" = @"type".?,
+                        .interface = interface,
+                        .allow_null = allow_null,
+                        .summary = summary,
+                    });
+                },
+                else => unreachable,
+            }
+        },
+
+        // <entry/> and <arg/> are the only realistically expected self-closing tags
+
+        .copyright => {
+            @branchHint(.unlikely);
+            // Self-closing copyright tag has no meaning, and no valid attributes
+            if (attribute_count != 0) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+        },
+
+        .protocol => {
+            @branchHint(.unlikely);
+            // Doesn't make sense, but still support it
+            var name: ?[]const u8 = null;
+            errdefer { if (name) |n| allocator.free(n); }
+            for (0..attribute_count) |attribute_index| {
+                const name = scanner.attribute_names.at(attribute_index).?;
+                const value = scanner.attribute_values.at(attribute_index).?;
+                if (mem.eql(u8, "name", name) and name == null) {
+                    name = try allocator.dupe(u8, value);
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+            if (name == null) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+            assert(top == null);
+            try protocols.append(allocator, .{
+                .name = name,
+                .copyright = null,
+                .interfaces = &.{},
+            });
+        },
+
+        .interface => {
+            @branchHint(.unlikely);
+            // Doesn't make sense, but still support it
+            var name: ?[]const u8 = null;
+            var version: ?VersionNumber = null;
+            errdefer { if (name) |n| allocator.free(n); }
+            for (0..attribute_count) |attribute_index| {
+                const name = scanner.attribute_names.at(attribute_index).?;
+                const value = scanner.attribute_values.at(attribute_index).?;
+                if (mem.eql(u8, "name", name)) {
+                    if (name == null) {
+                        name = try allocator.dupe(u8, value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if (mem.eql(u8, "version", name)) {
+                    if (version == null) {
+                        if (fmt.parseUnsigned(VersionNumber, value, 10)) |number| {
+                            version = number;
+                        } else |err| {
+                            if (err == error.Overflow) std.log.err(
+                                "version string \'{s}\' overflows the VersionNumber type {s}",
+                                .{ value, @typeName(VersionNumber) },
+                            );
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+            if (name == null or version == null) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+            assert(top == .protocol);
+            try protocols.items[protocols.items.len-1].interfaces.append(allocator, .{
+                .name = name,
+                .version = version,
+                .description_short = null,
+                .description_long = null,
+                .objects = &.{},
+            });
+        },
+
+        .description => {
+            @branchHint(.unlikely);
+            // Self-closing description could contain the summary attribute
+            var summary: ?[]const u8 = null;
+            errdefer { if (summary) |s| allocator.free(s); }
+            for (0..attribute_count) |attribute_index| {
+                const name = scanner.attribute_names.at(attribute_index).?;
+                const value = scanner.attribute_values.at(attribute_index).?;
+                if (mem.eql(u8, "summary", name) and summary == null) {
+                    summary = try allocator.dupe(u8, value);
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+            if (summary) |description_short| {
+                if (top) |t| { switch (t) {
+                    .interface => {
+                        const interfaces: []Interface.Parsing = protocols.items[protocols.item.len-1].interfaces.items;
+                        const last: *Interface.Parsing = &interfaces[interfaces.len-1];
+                        if (last.description_short == null) {
+                            last.description_short = s;
+                        } else {
+                            scanner.source_invalid_err = .clobber;
+                            return error.InvalidWaylandXML;
+                        }
+                    },
+                    inline .request, .event, .@"enum" => |child_obj| {
+                        const Parsing: type = switch (child_obj) {
+                            .request => Request.Parsing,
+                            .event => Event.Parsing,
+                            .@"enum" => Enum.Parsing,
+                        };
+                        const child_tag: Interface.ChildTag = switch (child_obj) {
+                            .request => .request,
+                            .event => .event,
+                            .@"enum" => @"enum",
+                        };
+
+                        const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                        const last_interface: *Interface.Parsing = &interfaces[interfaces.len-1];
+                        // Assert that the last object is of the type indicated by the tag stack
+                        const last: *Parsing = &@field(
+                            last_interface.objects.items[last_interface.objects.items.len-1],
+                            @tagName(child_tag),
+                        );
+                        if (last.description_short == null) {
+                            last.description_short = s;
+                        } else {
+                            scanner.source_invalid_err = .clobber;
+                            return error.InvalidWaylandXML;
+                        }
+                    },
+                    .protocol, .arg, .entry, .copyright, .description => {
+                        scanner.source_invalid_err = .unsupported_description_parent;
+                        return error.InvalidWaylandXML;
+                    },
+                }} else {
+                    scanner.source_invalid_err = .unsupported_description_parent;
+                    return error.InvalidWaylandXML;
+                }
+            }
+        },
+
+        .request, .event, .@"enum" => {
+            @branchHint(.unlikely);
+            // Doesn't make sense, and does not map to valid parsed output
+            scanner.source_invalid_err = .invalid_self_closing;
+            return error.InvalidWaylandXML;
+        },
     }
 
     scanner.tag_name_buffer.clearRetainingCapacity();
@@ -724,39 +1153,50 @@ fn pushEmptyElement(scanner: *Scanner, writer: *Io.Writer) !void {
 }
 
 /// A beginning element tag ('<TAGNAME>')
-fn pushStartElement(scanner: *Scanner, writer: *Io.Writer) !void {
-    scanner.last_opening_was_literal_text_tag =
-        for (literal_text_tags) |tag_name| {
-            if (mem.eql(u8, tag_name, scanner.tag_name_buffer.items)) break true;
-        } else false;
+fn pushStartElement(scanner: *Scanner, allocator: Allocator, protocols: *std.ArrayList(Protocol.Parsing)) !void {
+    const tag: Tag = .fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
+        scanner.source_invalid_err = .unsupported_tag;
+        break :no_tag error.InvalidWaylandXML;
+    };
+    assert(scanner.attribute_names.strings.items.len == scanner.attribute_values.strings.items.len) {
+    const attribute_count = scanner.attribute_names.strings.items.len;
+
+    scanner.last_opening_was_literal_text_tag = switch (tag) {
+        .description, .copyright => true,
+        else => false,
+    };
+
+    const top: ?Tag = scanner.tag_stack.getLastOrNull();
+    try scanner.validateStartTag(top, tag);
 
     // TODO
-    try writer.print("<{s}>\n", .{ scanner.tag_name_buffer.items });
-    for (
-        scanner.attribute_names.strings.items,
-        scanner.attribute_values.strings.items,
-    ) |name_entry, value_entry| {
-        try writer.print("  {s}=\"{s}\"\n", .{
-            scanner.attribute_names.stringFromEntry(name_entry),
-            scanner.attribute_values.stringFromEntry(value_entry),
-        });
-    }
+    _ = protocols;
+
+    try scanner.tag_stack.append(allocator, tag);
 
     scanner.tag_name_buffer.clearRetainingCapacity();
     scanner.attribute_names.clear();
     scanner.attribute_values.clear();
 }
 
-pub const literal_text_tags = [_][:0]const u8 {
-    "description",
-    "copyright",
-};
-
 /// An ending element tag ('</TAGNAME>')
-fn pushEndElement(scanner: *Scanner, writer: *Io.Writer) !void {
+fn pushEndElement(scanner: *Scanner, allocator: Allocator, protocols: *std.ArrayList(Protocols.Parsing)) !void {
+    const tag: Tag = .fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
+        scanner.source_invalid_err = .unsupported_tag;
+        break :no_tag error.InvalidWaylandXML;
+    };
+
     // TODO
-    try writer.print("</{s}>\n", .{ scanner.tag_name_buffer.items });
+    _ = protocols;
+
+    if (scanner.tag_stack.pop() != tag) {
+        scanner.source_invalid_err = .mismatched_tag_close;
+        return error.InvalidWaylandXML;
+    }
+
     scanner.tag_name_buffer.clearRetainingCapacity();
+    assert(scanner.attribute_names.strings.items.len == 0);
+    assert(scanner.attribute_values.strings.items.len == 0);
 }
 
 /// A tag attribute (ATTRIBUTE of '<TAGNAME ATTRIBUTE="VALUE"'(/)>)
@@ -773,12 +1213,6 @@ fn pushAttributeValue(scanner: *Scanner, allocator: Allocator) !void {
     scanner.attribute_value_buffer.clearRetainingCapacity();
 }
 
-fn pushLiteralText(scanner: *Scanner, writer: *Io.Writer) !void {
-    // TODO
-    try writer.print("literal text: \"{s}\"\n", .{ scanner.text_literal_buffer.items });
-    scanner.text_literal_buffer.clearRetainingCapacity();
-}
-
 fn pushDeclaration(scanner: *Scanner) !void {
     if (scanner.xml_declaration == null) {
         if (mem.eql(u8, XMLDeclaration.tag_name, scanner.tag_name_buffer.items)) {
@@ -793,10 +1227,10 @@ fn pushDeclaration(scanner: *Scanner) !void {
 
             if (attribute_count >= 1 and mem.eql(u8,
                 "version",
-                scanner.attribute_names.stringFromEntry(scanner.attribute_names.strings.items[0]),
+                scanner.attribute_names.at(0).?,
             )) {
                 const major_string, const minor_string = mem.cutScalar(u8,
-                    scanner.attribute_values.stringFromEntry(scanner.attribute_values.strings.items[0]),
+                    scanner.attribute_values.at(0).?,
                     '.',
                 ) orelse return error.InvalidWaylandXML;
                 const major: u8 = fmt.parseUnsigned(u8, major_string, 10)
@@ -809,10 +1243,8 @@ fn pushDeclaration(scanner: *Scanner) !void {
             }
 
             for (1..attribute_count) |attribute_index| {
-                const name = scanner.attribute_names.stringFromEntry(
-                    scanner.attribute_names.strings.items[attribute_index]);
-                const value = scanner.attribute_values.stringFromEntry(
-                    scanner.attribute_values.strings.items[attribute_index]);
+                const name = scanner.attribute_names.at(attribute_index).?;
+                const value = scanner.attribute_values.at(attribute_index).?;
 
                 if (mem.eql(u8, "encoding", name)) {
                     if (encoding == null) {
@@ -1155,7 +1587,7 @@ pub const Arg = struct {
         array,
         fd,
 
-        pub fn fromString(str: []const u8) ?Tag {
+        pub fn fromString(str: []const u8) ?Type {
             return name_map.get(str);
         }
 
@@ -1198,10 +1630,18 @@ pub const Entry = struct {
             };
         }
     };
+
+    pub fn isValidValue(value: []const u8) bool {
+        const possible_backing = [_]type{ u32, i32 };
+        return inline for (possible_backing) |backing| {
+            if (fmt.parseInt(backing, value, 0)) |_| {
+                break true;
+            } else |_| {}
+        } else false;
+    }
 };
 
-fn validateStartTag(scanner: *Scanner, tag: Tag) !void {
-    const top: ?Tag = scanner.tag_stack.getLastOrNull();
+fn validateStartTag(scanner: *Scanner, top: ?Tag, tag: Tag) !void {
     switch (tag) {
         .protocol => {
             if (top != null) {
@@ -1304,11 +1744,22 @@ const StringList = struct {
     pub fn stringFromEntry(list: StringList, entry: StringEntry) []const u8 {
         return list.concatenated.items[entry.idx..][0..entry.len];
     }
+
+    pub fn at(list: StringList, idx: usize) ?[]const u8 {
+        if (idx < list.strings.items.len) {
+            const entry = list.strings.items[idx];
+            assert(entry.idx + entry.len <= list.concatenated.items.len);
+            return list.stringFromEntry(entry);
+        } else {
+            return null;
+        }
+    }
 };
 
 const Scanner = @This();
 
 const ByteArrayList = std.ArrayList(u8);
+const TagStack = std.ArrayList(Tag);
 const assert = std.debug.assert;
 
 const Io = std.Io;
