@@ -135,6 +135,7 @@ pub const SourceInvalidError = enum {
     double_declaration,
     invalid_declaration_name,
     invalid_declaration_attributes,
+    invalid_non_self_closing,
     invalid_self_closing,
     non_root_protocol,
     interface_not_protocol_child,
@@ -142,6 +143,7 @@ pub const SourceInvalidError = enum {
     invalid_arg_parent,
     invalid_entry_parent,
     invalid_description_parent,
+    invalid_copyright_parent,
     invalid_entry_value,
     missing_attribute_at_final,
 };
@@ -162,7 +164,7 @@ pub fn logSourceInvalidErr(scanner: Scanner, comptime logFn: anytype, file_path:
                 .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items }
             ),
             .clobber => logFn(
-                "{s}:{d}:{d}: double declaration of attribute",
+                "{s}:{d}:{d}: double declaration of attribute or description",
                 .{ file_path, scanner.line, scanner.column },
             ),
             .invalid_attributes => logFn(
@@ -217,6 +219,10 @@ pub fn logSourceInvalidErr(scanner: Scanner, comptime logFn: anytype, file_path:
                 "{s}:{d}:{d}: invalid attributes for \'<?xml?>\' tag",
                 .{ file_path, scanner.line, scanner.column },
             ),
+            .invalid_non_self_closing => logFn(
+                "{s}:{d}:{d}: <{s}> is only supported as a self-closing tag",
+                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
+            ),
             .invalid_self_closing => logFn(
                 "{s}:{d}:{d}: <{s}/> is unsupported as a self-closing tag",
                 .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
@@ -243,6 +249,10 @@ pub fn logSourceInvalidErr(scanner: Scanner, comptime logFn: anytype, file_path:
             ),
             .invalid_description_parent => logFn(
                 "{s}:{d}:{d}: unsupported parent of <description> tag",
+                .{ file_path, scanner.line, scanner.column },
+            ),
+            .invalid_copyright_parent => logFn(
+                "{s}:{d}:{d}: unsupported parent of <copyright> tag",
                 .{ file_path, scanner.line, scanner.column },
             ),
             .invalid_entry_value => logFn(
@@ -450,7 +460,6 @@ pub fn parse(scanner: *Scanner, allocator: Allocator, reader: *Io.Reader) ParseE
                 } else {
                     return error.StreamIncomplete;
                 }
-                ) error.StreamIncomplete else try protocols.finalize(allocator);
             }
         },
 
@@ -814,48 +823,53 @@ fn nextByte(scanner: *Scanner, reader: *Io.Reader) !?u8 {
 }
 
 /// An empty element tag ('<TAGNAME/>').
-fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.ArrayList(Protocol.Parsing)) !void {
+fn pushEmptyElement(
+    scanner: *Scanner,
+    allocator: Allocator,
+    protocols: *std.ArrayList(Protocol.Parsing),
+) !void {
     const tag: Tag = .fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
         scanner.source_invalid_err = .unsupported_tag;
         break :no_tag error.InvalidWaylandXML;
     };
-    assert(scanner.attribute_names.strings.items.len == scanner.attribute_values.strings.items.len) {
+    assert(scanner.attribute_names.strings.items.len == scanner.attribute_values.strings.items.len);
     const attribute_count = scanner.attribute_names.strings.items.len;
 
     const top: ?Tag = scanner.tag_stack.getLastOrNull();
-    try scanner.validateStartTag(top, tag);
+    try scanner.validateTagPosition(top, tag);
 
     switch (tag) {
         .entry => {
             var name: ?[]const u8 = null;
-            var value_attr: ?[]const u8 = null;
+            var value: ?[]const u8 = null;
             var summary: ?[]const u8 = null;
             errdefer {
                 if (name) |n| allocator.free(n);
-                if (value_attr) |v| allocator.free(v);
+                if (value) |v| allocator.free(v);
                 if (summary) |s| allocator.free(s);
             }
 
             for (0..attribute_count) |attribute_index| {
-                const name = scanner.attribute_names.at(attribute_index).?;
-                const value = scanner.attribute_values.at(attribute_index).?;
-                if (mem.eql(u8, "name" , name) {
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
+
+                if ( mem.eql(u8, "name" , attr_name) ) {
                     if (name == null) {
-                        name = try allocator.dupe(u8, value);
+                        name = try allocator.dupe(u8, attr_value);
                     } else {
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
-                } else if (mem.eql(u8, "value", name)) {
-                    if (value_attr = null) {
-                        value_attr = try allocator.dupe(u8, value);
+                } else if ( mem.eql(u8, "value", attr_name) ) {
+                    if (value == null) {
+                        value = try allocator.dupe(u8, attr_value);
                     } else {
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
-                } else if (mem.eql(u8, "summary", name)) {
+                } else if ( mem.eql(u8, "summary", attr_name) ) {
                     if (summary == null) {
-                        summary = try allocator.dupe(u8, value);
+                        summary = try allocator.dupe(u8, attr_value);
                     } else {
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
@@ -865,16 +879,18 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
                     return error.InvalidWaylandXML;
                 }
             }
-            if (name == null or value_attr == null) {
+
+            if (name == null or value == null) {
                 scanner.source_invalid_err = .invalid_attributes;
                 return error.InvalidWaylandXML;
             }
 
-            if (!Entry.isValidValue(value_attr.?)) {
+            if (!Entry.isValidValue(value.?)) {
                 scanner.source_invalid_err = .invalid_entry_value;
                 return error.InvalidWaylandXML;
             }
 
+            // Tag hierarchy was validated above
             assert(top == .@"enum");
             {
                 const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
@@ -882,7 +898,7 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
                 const last: *Enum.Parsing = &last_interface.objects.items[last_interface.objects.items.len-1].@"enum";
                 try last.entries.append(allocator, .{
                     .name = name.?,
-                    .value = value_attr.?,
+                    .value = value.?,
                     .summary = summary,
                 });
             }
@@ -901,18 +917,19 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
             }
 
             for (0..attribute_count) |attribute_index| {
-                const name = scanner.attribute_names.at(attribute_index).?;
-                const value = scanner.attribute_values.at(attribute_index).?;
-                if (mem.eql(u8, "name", name)) {
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
+
+                if ( mem.eql(u8, "name", attr_name) ) {
                     if (name == null) {
-                        name = try allocator.dupe(u8, value);
+                        name = try allocator.dupe(u8, attr_value);
                     } else {
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
-                } else if (mem.eql(u8, "type", name)) {
+                } else if ( mem.eql(u8, "type", attr_name) ) {
                     if (@"type" == null) {
-                        if (Arg.Type.fromString(value)) |t| {
+                        if (Arg.Type.fromString(attr_value)) |t| {
                             @"type" = t;
                         } else {
                             scanner.source_invalid_err = .invalid_attributes;
@@ -922,18 +939,18 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
-                } else if (mem.eql(u8, "interface", name)) {
+                } else if ( mem.eql(u8, "interface", attr_name) ) {
                     if (interface == null) {
-                        interface = try allocator.dupe(u8, value);
+                        interface = try allocator.dupe(u8, attr_value);
                     } else {
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
-                } else if (mem.eql(u8, "allow-null", name)) {
+                } else if ( mem.eql(u8, "allow-null", attr_name) ) {
                     if (allow_null == null) {
-                        if (mem.eql(u8, "true", value)) {
+                        if (mem.eql(u8, "true", attr_value)) {
                             allow_null = true;
-                        } else if (mem.eql(u8, "false", value)) {
+                        } else if (mem.eql(u8, "false", attr_value)) {
                             allow_null = false;
                         } else {
                             scanner.source_invalid_err = .invalid_attributes;
@@ -943,9 +960,9 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
-                } else if (mem.eql(u8, "summary", name)) {
+                } else if ( mem.eql(u8, "summary", attr_name) ) {
                     if (summary == null) {
-                        summary = try allocator.dupe(u8, value);
+                        summary = try allocator.dupe(u8, attr_value);
                     } else {
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
@@ -1003,10 +1020,10 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
             var name: ?[]const u8 = null;
             errdefer { if (name) |n| allocator.free(n); }
             for (0..attribute_count) |attribute_index| {
-                const name = scanner.attribute_names.at(attribute_index).?;
-                const value = scanner.attribute_values.at(attribute_index).?;
-                if (mem.eql(u8, "name", name) and name == null) {
-                    name = try allocator.dupe(u8, value);
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
+                if ( mem.eql(u8, "name", attr_name) and name == null ) {
+                    name = try allocator.dupe(u8, attr_value);
                 } else {
                     scanner.source_invalid_err = .invalid_attributes;
                     return error.InvalidWaylandXML;
@@ -1016,6 +1033,7 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
                 scanner.source_invalid_err = .invalid_attributes;
                 return error.InvalidWaylandXML;
             }
+            // Tag hierarchy was validated above
             assert(top == null);
             try protocols.append(allocator, .{
                 .name = name,
@@ -1031,23 +1049,24 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
             var version: ?VersionNumber = null;
             errdefer { if (name) |n| allocator.free(n); }
             for (0..attribute_count) |attribute_index| {
-                const name = scanner.attribute_names.at(attribute_index).?;
-                const value = scanner.attribute_values.at(attribute_index).?;
-                if (mem.eql(u8, "name", name)) {
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
+                if (mem.eql(u8, "name", attr_name)) {
                     if (name == null) {
-                        name = try allocator.dupe(u8, value);
+                        name = try allocator.dupe(u8, attr_value);
                     } else {
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
-                } else if (mem.eql(u8, "version", name)) {
+                } else if (mem.eql(u8, "version", attr_name)) {
                     if (version == null) {
-                        if (fmt.parseUnsigned(VersionNumber, value, 10)) |number| {
+                        if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
                             version = number;
                         } else |err| {
                             if (err == error.Overflow) std.log.err(
-                                "version string \'{s}\' overflows the VersionNumber type {s}",
-                                .{ value, @typeName(VersionNumber) },
+                                "version string \'{s}\' overflows the version number type"
+                                    ++ @typeName(VersionNumber),
+                                .{ attr_value },
                             );
                             scanner.source_invalid_err = .invalid_attributes;
                             return error.InvalidWaylandXML;
@@ -1065,6 +1084,7 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
                 scanner.source_invalid_err = .invalid_attributes;
                 return error.InvalidWaylandXML;
             }
+            // Tag hierarchy was validated above
             assert(top == .protocol);
             try protocols.items[protocols.items.len-1].interfaces.append(allocator, .{
                 .name = name,
@@ -1081,27 +1101,29 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
             var summary: ?[]const u8 = null;
             errdefer { if (summary) |s| allocator.free(s); }
             for (0..attribute_count) |attribute_index| {
-                const name = scanner.attribute_names.at(attribute_index).?;
-                const value = scanner.attribute_values.at(attribute_index).?;
-                if (mem.eql(u8, "summary", name) and summary == null) {
-                    summary = try allocator.dupe(u8, value);
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
+                if (mem.eql(u8, "summary", attr_name) and summary == null) {
+                    summary = try allocator.dupe(u8, attr_value);
                 } else {
                     scanner.source_invalid_err = .invalid_attributes;
                     return error.InvalidWaylandXML;
                 }
             }
             if (summary) |description_short| {
-                if (top) |t| { switch (t) {
+                // Tag hierarchy was validated above
+                switch (top.?) {
                     .interface => {
-                        const interfaces: []Interface.Parsing = protocols.items[protocols.item.len-1].interfaces.items;
+                        const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
                         const last: *Interface.Parsing = &interfaces[interfaces.len-1];
                         if (last.description_short == null) {
-                            last.description_short = s;
+                            last.description_short = description_short;
                         } else {
                             scanner.source_invalid_err = .clobber;
                             return error.InvalidWaylandXML;
                         }
                     },
+
                     inline .request, .event, .@"enum" => |child_obj| {
                         const Parsing: type = switch (child_obj) {
                             .request => Request.Parsing,
@@ -1111,30 +1133,28 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
                         const child_tag: Interface.ChildTag = switch (child_obj) {
                             .request => .request,
                             .event => .event,
-                            .@"enum" => @"enum",
+                            .@"enum" => .@"enum",
                         };
 
                         const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
                         const last_interface: *Interface.Parsing = &interfaces[interfaces.len-1];
-                        // Assert that the last object is of the type indicated by the tag stack
+                        // Asserts that the last object is of the type indicated by the tag stack
                         const last: *Parsing = &@field(
                             last_interface.objects.items[last_interface.objects.items.len-1],
                             @tagName(child_tag),
                         );
                         if (last.description_short == null) {
-                            last.description_short = s;
+                            last.description_short = description_short;
                         } else {
                             scanner.source_invalid_err = .clobber;
                             return error.InvalidWaylandXML;
                         }
                     },
+
                     .protocol, .arg, .entry, .copyright, .description => {
                         scanner.source_invalid_err = .unsupported_description_parent;
                         return error.InvalidWaylandXML;
                     },
-                }} else {
-                    scanner.source_invalid_err = .unsupported_description_parent;
-                    return error.InvalidWaylandXML;
                 }
             }
         },
@@ -1153,12 +1173,16 @@ fn pushEmptyElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
 }
 
 /// A beginning element tag ('<TAGNAME>')
-fn pushStartElement(scanner: *Scanner, allocator: Allocator, protocols: *std.ArrayList(Protocol.Parsing)) !void {
+fn pushStartElement(
+    scanner: *Scanner,
+    allocator: Allocator,
+    protocols: *std.ArrayList(Protocol.Parsing),
+) !void {
     const tag: Tag = .fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
         scanner.source_invalid_err = .unsupported_tag;
         break :no_tag error.InvalidWaylandXML;
     };
-    assert(scanner.attribute_names.strings.items.len == scanner.attribute_values.strings.items.len) {
+    assert(scanner.attribute_names.strings.items.len == scanner.attribute_values.strings.items.len);
     const attribute_count = scanner.attribute_names.strings.items.len;
 
     scanner.last_opening_was_literal_text_tag = switch (tag) {
@@ -1167,10 +1191,429 @@ fn pushStartElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
     };
 
     const top: ?Tag = scanner.tag_stack.getLastOrNull();
-    try scanner.validateStartTag(top, tag);
+    try scanner.validateTagPosition(top, tag);
 
-    // TODO
-    _ = protocols;
+    switch (tag) {
+        .description => {
+            var summary: ?[]const u8 = null;
+            errdefer { if (summary) |s| allocator.free(s); }
+            for (0..attribute_count) |attribute_index| {
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
+                if (mem.eql(u8, "summary", attr_name) and summary == null) {
+                    summary = try allocator.dupe(u8, attr_value);
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+
+            if (summary) |description_short| {
+                // Tag hierarchy was validated above
+                switch (top.?) {
+                    .interface => {
+                        const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                        const last: *Interface.Parsing = &interfaces[interfaces.len-1];
+                        if (last.description_short == null) {
+                            last.description_short = description_short;
+                        } else {
+                            scanner.source_invalid_err = .clobber;
+                            return error.InvalidWaylandXML;
+                        }
+                    },
+
+                    inline .request, .event, .@"enum" => |child_obj| {
+                        const Parsing: type = switch (child_obj) {
+                            .request => Request.Parsing,
+                            .event => Event.Parsing,
+                            .@"enum" => Enum.Parsing,
+                        };
+                        const child_tag: Interface.ChildTag = switch (child_obj) {
+                            .request => .request,
+                            .event => .event,
+                            .@"enum" => .@"enum",
+                        };
+
+                        const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                        const last_interface: *Interface.Parsing = &interfaces[interfaces.len-1];
+                        // Asserts that the last object is of the type indicated by the tag stack
+                        const last: *Parsing = &@field(
+                            last_interface.objects.items[last_interface.objects.items.len-1],
+                            @tagName(child_tag),
+                        );
+
+                        if (last.description_short == null) {
+                            last.description_short = description_short;
+                        } else {
+                            scanner.source_invalid_err = .clobber;
+                            return error.InvalidWaylandXML;
+                        }
+                    },
+
+                    else => unreachable,
+                }
+            }
+        },
+
+        .copyright => {
+            // Tag hierarchy was validated above to be a <protocol> parent
+            if (attribute_count != 0) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+            if (protocols.items[protocols.items.len-1].copyright != null) {
+                scanner.source_invalid_err = .clobber;
+                return error.InvalidWaylandXML;
+            }
+            // The text content will be inserted at the closing '</copyright>'
+        },
+
+        .protocol => {
+            var name: ?[]const u8 = null;
+            errdefer {
+                if (name) |n| allocator.free(n);
+            }
+
+            for (0..attribute_count) |attribute_index| {
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
+
+                if ( mem.eql(u8, "name", attr_name) and name == null ) {
+                    name = try allocator.dupe(u8, attr_value);
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+
+            if (name == null) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+
+            // Tag hierarchy was validated above
+            assert(top == null);
+            const parsing: Protocol.Parsing = try .init(allocator);
+            parsing.name = name;
+            try protocols.append(allocator, parsing);
+        },
+
+        .interface => {
+            var name: ?[]const u8 = null;
+            var version: ?VersionNumber = null;
+            errdefer {
+                if (name) |n| allocator.free(n);
+            }
+
+            for (0..attribute_count) |attribute_index| {
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
+
+                if ( mem.eql(u8, "name", attr_name) ) {
+                    if (name == null) {
+                        name = try allocator.dupe(u8, attr_value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "version", attr_name) ) {
+                    if (version == null) {
+                        if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
+                            version = number;
+                        } else |err| {
+                            if (err == error.Overflow) std.log.err(
+                                "version string \'{s}\' overflows the version number type"
+                                    ++ @typeName(VersionNumber),
+                                .{ attr_value },
+                            );
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+
+            if (name == null or version == null) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+
+            // Tag hierarchy was validated above
+            assert(top == .protocol);
+            const parsing: Interface.Parsing = try .init(allocator);
+            parsing.name = name;
+            parsing.version = version;
+            try protocols.items[protocols.items.len-1].interfaces.append(allocator, parsing);
+        },
+
+        .request, .event, .@"enum" => |interface_object_tag| {
+            var name: ?[]const u8 = null;
+            var since: ?VersionNumber = null;
+            var bitfield: ?bool = null;
+            errdefer {
+                if (name) |n| allocator.free(n);
+            }
+
+            for (0..attribute_count) |attribute_index| {
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
+
+                if ( mem.eql(u8, "name", attr_name) ) {
+                    if (name == null) {
+                        name = try allocator.dupe(u8, attr_value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "since", attr_name) ) {
+                    if (since == null) {
+                        if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
+                            since = number;
+                        } else |err| {
+                            if (err == error.Overflow) std.log.err(
+                                "\'since\' string \'{s}\' overflows the version number type"
+                                    ++ @typeName(VersionNumber),
+                                .{ attr_value },
+                            );
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "bitfield", attr_name) ) {
+                    if (interface_object_tag == .@"enum" and bitfield == null) {
+                        if ( mem.eql(u8, "true", attr_value) ) {
+                            bitfield = true;
+                        } else if ( mem.eql(u8, "false", attr_value) ) {
+                            bitfield = false;
+                        } else {
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+
+            if (name == null) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+
+            // Tag hierarchy was validated above
+            assert(top == .interface);
+
+            const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+            const last_interface: *Interface.Parsing = &interfaces[interfaces.len-1];
+            switch (interface_object_tag) {
+                inline else => |object_tag| {
+                    const interface_child: Interface.ChildTag = switch (object_tag) {
+                        .request => .request,
+                        .event => .event,
+                        .@"enum" => .@"enum",
+                    };
+                    const parsing: switch (object_tag) {
+                        .request => Request.Parsing,
+                        .event => Event.Parsing,
+                        .@"enum" => Enum.Parsing,
+                    } = try .init(allocator);
+
+                    try last_interface.objects.append(allocator, @unionInit(
+                        Interface.Object.Parsing,
+                        @tagName(interface_child),
+                        parsing,
+                    ));
+                }
+            }
+        },
+
+        // <entry></entry> or <arg></arg> are nonstandard but technically valid.
+        // To reject these, uncomment this prong
+        // and comment out the below prongs for .entry and .arg
+        //.entry, .arg => {
+        //    scanner.source_invalid_err = .invalid_non_self_closing;
+        //    return error.InvalidWaylandXML;
+        //}
+
+        .entry => {
+            @branchHint(.unlikely);
+            var name: ?[]const u8 = null;
+            var value: ?[]const u8 = null;
+            var summary: ?[]const u8 = null;
+            errdefer {
+                if (name) |n| allocator.free(n);
+                if (value) |v| allocator.free(v);
+                if (summary) |s| allocator.free(s);
+            }
+
+            for (0..attribute_count) |attribute_index| {
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_names.at(attribute_index).?;
+
+                if ( mem.eql(u8, "name", attr_name) ) {
+                    if (name == null) {
+                        name = try allocator.dupe(u8, attr_value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "value", attr_name) ) {
+                    if (value == null) {
+                        value = try allocator.dupe(attr_value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "summary", attr_name) ) {
+                    if (summary == null) {
+                        summary = try allocator.dupe(u8, attr_value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+
+            if (name == null or value == null) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+
+            if (!Entry.isValidValue(value.?)) {
+                scanner.source_invalid_err = .invalid_entry_value;
+                return error.InvalidWaylandXML;
+            }
+
+            // Tag hierarchy was validated above
+            assert(top == .@"enum");
+            {
+                const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                const last_interface: *Interface.Parsing = &interfaces[interfaces.len-1];
+                const last: *Enum.Parsing = &last_interface.objects.items[last_interface.objects.items.len-1].@"enum";
+                try last.entries.append(allocator, .{
+                    .name = name.?,
+                    .value = value.?,
+                    .summary = summary,
+                });
+            }
+        },
+
+        .arg => {
+            @branchHint(.unlikely);
+            var name: ?[]const u8 = null;
+            var @"type": ?Arg.Type = null;
+            var interface: ?[]const u8 = null;
+            var allow_null: ?bool = null;
+            var summary: ?[]const u8 = null;
+            errdefer {
+                if (name) |n| allocator.free(n);
+                if (interface) |i| allocator.free(i);
+                if (summary) |s| allocator.free(s);
+            }
+
+            for (0..attribute_count) |attribute_index| {
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
+
+                if ( mem.eql(u8, "name", attr_name) ) {
+                    if (name == null) {
+                        name = try allocator.dupe(u8, attr_value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "type", attr_name) ) {
+                    if (@"type" == null) {
+                        if (Arg.Type.fromString(attr_value)) |t| {
+                            @"type" = t;
+                        } else {
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "interface", attr_name) ) {
+                    if (interface == null) {
+                        interface = try allocator.dupe(u8, attr_value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "allow-null", attr_name) ) {
+                    if (allow_null == null) {
+                        if (mem.eql(u8, "true", attr_value)) {
+                            allow_null = true;
+                        } else if (mem.eql(u8, "false", attr_value)) {
+                            allow_null = false;
+                        } else {
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "summary", attr_name) ) {
+                    if (summary == null) {
+                        summary = try allocator.dupe(u8, attr_value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+
+            if (name == null or @"type" == null) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+
+            switch (top.?) {
+                inline .request, .event => |parent| {
+                    const Parsing: type = switch (parent) {
+                        .request => Request.Parsing,
+                        .event => Event.Parsing,
+                        else => unreachable,
+                    };
+                    const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                    const last_interface: *Interface.Parsing = &interfaces[interfaces.len-1];
+                    const last: *Parsing = &@field(
+                        last_interface.objects.items[last_interface.objects.items.len-1],
+                        @tagName(parent),
+                    );
+                    try last.args.append(allocator, .{
+                        .name = name.?,
+                        .@"type" = @"type".?,
+                        .interface = interface,
+                        .allow_null = allow_null,
+                        .summary = summary,
+                    });
+                },
+                else => unreachable,
+            }
+        },
+    }
 
     try scanner.tag_stack.append(allocator, tag);
 
@@ -1180,20 +1623,99 @@ fn pushStartElement(scanner: *Scanner, allocator: Allocator, protocols: *std.Arr
 }
 
 /// An ending element tag ('</TAGNAME>')
-fn pushEndElement(scanner: *Scanner, allocator: Allocator, protocols: *std.ArrayList(Protocols.Parsing)) !void {
+fn pushEndElement(
+    scanner: *Scanner,
+    allocator: Allocator,
+    protocols: *std.ArrayList(Protocol.Parsing),
+) !void {
     const tag: Tag = .fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
         scanner.source_invalid_err = .unsupported_tag;
         break :no_tag error.InvalidWaylandXML;
     };
-
-    // TODO
-    _ = protocols;
 
     if (scanner.tag_stack.pop() != tag) {
         scanner.source_invalid_err = .mismatched_tag_close;
         return error.InvalidWaylandXML;
     }
 
+    const top: ?Tag = scanner.tag_stack.getLastOrNull();
+
+    switch (tag) {
+        .description => {
+            if (top == null) {
+                scanner.source_invalid_err = .invalid_description_parent;
+                return error.InvalidWaylandXML;
+            }
+
+            const description_dest: *?[]const u8 = switch (top.?) {
+                .interface => try interface_dest: {
+                    const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                    const last: *Interface.Parsing = &interfaces[interfaces.len-1];
+
+                    if (last.description_long == null) {
+                        break :interface_dest &last.description_long;
+                    } else {
+                        scanner.source_invalid_err = .clobber;
+                        return error.InvalidWaylandXML;
+                    }
+                },
+
+                inline .request, .event, .@"enum" => |child_obj| try interface_child_dest: {
+                    const Parsing: type = switch (child_obj) {
+                        .request => Request.Parsing,
+                        .event => Event.Parsing,
+                        .@"enum" => Enum.Parsing,
+                    };
+                    const child_tag: Interface.ChildTag = switch (child_obj) {
+                        .request => .request,
+                        .event => .event,
+                        .@"enum" => .@"enum",
+                    };
+
+                    const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                    const last_interface: *Interface.Parsing = &interfaces[interfaces.len-1];
+                    // Asserts that the last object is of the type indicated by the tag stack
+                    const last: *Parsing = &@field(
+                        last_interface.objects.items[last_interface.objects.items.len-1],
+                        @tagName(child_tag),
+                    );
+
+                    if (last.description_long == null) {
+                        break :interface_child_dest &last.description_long;
+                    } else {
+                        scanner.source_invalid_err = .clobber;
+                        return error.InvalidWaylandXML;
+                    }
+                },
+            };
+
+            const description: []const u8 = try trimLiteralText(allocator, scanner.text_literal_buffer.items);
+            errdefer { if (description.len != 0) allocator.free(description); }
+            if (description.len != 0) description_dest.* = description;
+        },
+
+        .copyright => {
+            if (top != .protocol) {
+                scanner.source_invalid_err = .invalid_copyright_parent;
+                return error.InvalidWaylandXML;
+            }
+
+            const protocol: *Protocol.Parsing = protocols.items[protocols.items.len-1];
+            if (protocol.copyright != null) {
+                scanner.source_invalid_err = .clobber;
+                return error.InvalidWaylandXML;
+            }
+
+            const copyright: []const u8 = try trimLiteralText(allocator, scanner.text_literal_buffer.items);
+            errdefer { if (copyright.len != 0) allocator.free(copyright); }
+            if (copyright.len != 0) protocol.copyright = copyright;
+        },
+
+        // Parsing is structured to never collect literal text in these cases
+        else => assert(scanner.text_literal_buffer.items.len == 0),
+    }
+
+    scanner.text_literal_buffer.clearRetainingCapacity();
     scanner.tag_name_buffer.clearRetainingCapacity();
     assert(scanner.attribute_names.strings.items.len == 0);
     assert(scanner.attribute_values.strings.items.len == 0);
@@ -1450,9 +1972,9 @@ pub const Request = struct {
 
 pub const Event = struct {
     name: []const u8,
+    since: ?VersionNumber,
     description_short: ?[]const u8,
     description_long: ?[]const u8,
-    since: ?VersionNumber,
     args: []Arg,
 
     pub fn deinit(event: Event, allocator: Allocator) void {
@@ -1594,7 +2116,7 @@ pub const Arg = struct {
         const name_map: std.StaticStringMap(Type) = .initComptime( make: {
             const types = std.enums.values(Type);
             var list: [types.len]struct { []const u8, Type } = undefined;
-            for (&list, types) |*kvs, @"type"| kvs.* = .{ @tagName(@"type", @"type" };
+            for (&list, types) |*kvs, @"type"| kvs.* = .{ @tagName(@"type"), @"type" };
             break :make list;
         } );
     };
@@ -1632,16 +2154,23 @@ pub const Entry = struct {
     };
 
     pub fn isValidValue(value: []const u8) bool {
-        const possible_backing = [_]type{ u32, i32 };
-        return inline for (possible_backing) |backing| {
-            if (fmt.parseInt(backing, value, 0)) |_| {
+        const PossibleBacking = [_]type{ u32, i32 };
+        return inline for (PossibleBacking) |Backing| {
+            if (fmt.parseInt(Backing, value, 0)) |_| {
                 break true;
             } else |_| {}
         } else false;
     }
 };
 
-fn validateStartTag(scanner: *Scanner, top: ?Tag, tag: Tag) !void {
+/// Format XML literal text blocks by
+/// outdenting and deleting trailing (non-newline) whitespace,
+/// allocating and returning the result.
+pub fn trimLiteralText(allocator: Allocator, text: []const u8) Allocator.Error![]const u8 {
+    return try allocator.dupe(text); // TODO
+}
+
+fn validateTagPosition(scanner: *Scanner, top: ?Tag, tag: Tag) error{InvalidWaylandXML}!void {
     switch (tag) {
         .protocol => {
             if (top != null) {
@@ -1670,6 +2199,26 @@ fn validateStartTag(scanner: *Scanner, top: ?Tag, tag: Tag) !void {
         .entry => {
             if (top != .@"enum") {
                 scanner.source_invalid_err = .invalid_entry_parent;
+                return error.InvalidWaylandXML;
+            }
+        },
+        .description => {
+            if (top) |t| {
+                switch (t) {
+                    .interface, .request, .event, .@"enum" => {},
+                    else => {
+                        scanner.source_invalid_err = .invalid_description_parent;
+                        return error.InvalidWaylandXML;
+                    },
+                }
+            } else {
+                scanner.source_invalid_err = .invalid_description_parent;
+                return error.InvalidWaylandXML;
+            }
+        },
+        .copyright => {
+            if (top != .protocol) {
+                scanner.source_invalid_err = .invalid_copyright_parent;
                 return error.InvalidWaylandXML;
             }
         },
