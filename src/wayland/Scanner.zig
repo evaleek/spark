@@ -399,7 +399,10 @@ pub fn parse(scanner: *Scanner, allocator: Allocator, reader: *Io.Reader) ParseE
     scanner.newStream();
 
     var protocols: std.ArrayList(Protocol.Parsing) = try .initCapacity(allocator, 1);
-    errdefer protocols.deinit(allocator);
+    errdefer {
+        for (protocols.items) |*protocol| protocol.deinit(allocator);
+        protocols.deinit(allocator);
+    }
 
     parse: switch (State.plaintext) {
         .plaintext => {
@@ -446,7 +449,7 @@ pub fn parse(scanner: *Scanner, allocator: Allocator, reader: *Io.Reader) ParseE
                 ) {
                     const protocols_slice = try allocator.alloc(Protocol, protocols.items.len);
                     errdefer allocator.free(protocols_slice);
-                    for (protocols_slice, protocols.items) |*new, old| {
+                    for (protocols_slice, protocols.items) |*new, *old| {
                         new.* = old.finalize(allocator) catch |err| switch (err) {
                             error.OutOfMemory => |e| return e,
                             error.MissingAttribute => return attr: {
@@ -507,7 +510,7 @@ pub fn parse(scanner: *Scanner, allocator: Allocator, reader: *Io.Reader) ParseE
                             try scanner.pushEmptyElement(allocator, &protocols);
                             continue :parse .plaintext;
                         } else if (scanner.last_byte == '?') {
-                            try scanner.pushDeclaration(allocator, &protocols);
+                            try scanner.pushDeclaration();
                             continue :parse .plaintext;
                         } else {
                             try scanner.pushStartElement(allocator, &protocols);
@@ -828,7 +831,7 @@ fn pushEmptyElement(
     allocator: Allocator,
     protocols: *std.ArrayList(Protocol.Parsing),
 ) !void {
-    const tag: Tag = .fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
+    const tag: Tag = Tag.fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
         scanner.source_invalid_err = .unsupported_tag;
         break :no_tag error.InvalidWaylandXML;
     };
@@ -1035,11 +1038,9 @@ fn pushEmptyElement(
             }
             // Tag hierarchy was validated above
             assert(top == null);
-            try protocols.append(allocator, .{
-                .name = name,
-                .copyright = null,
-                .interfaces = &.{},
-            });
+            var parsing: Protocol.Parsing = try .init(allocator);
+            parsing.name = name;
+            try protocols.append(allocator, parsing);
         },
 
         .interface => {
@@ -1086,13 +1087,10 @@ fn pushEmptyElement(
             }
             // Tag hierarchy was validated above
             assert(top == .protocol);
-            try protocols.items[protocols.items.len-1].interfaces.append(allocator, .{
-                .name = name,
-                .version = version,
-                .description_short = null,
-                .description_long = null,
-                .objects = &.{},
-            });
+            var parsing: Interface.Parsing = try .init(allocator);
+            parsing.name = name;
+            parsing.version = version;
+            try protocols.items[protocols.items.len-1].interfaces.append(allocator, parsing);
         },
 
         .description => {
@@ -1129,11 +1127,13 @@ fn pushEmptyElement(
                             .request => Request.Parsing,
                             .event => Event.Parsing,
                             .@"enum" => Enum.Parsing,
+                            else => comptime unreachable,
                         };
                         const child_tag: Interface.ChildTag = switch (child_obj) {
                             .request => .request,
                             .event => .event,
                             .@"enum" => .@"enum",
+                            else => comptime unreachable,
                         };
 
                         const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
@@ -1152,7 +1152,7 @@ fn pushEmptyElement(
                     },
 
                     .protocol, .arg, .entry, .copyright, .description => {
-                        scanner.source_invalid_err = .unsupported_description_parent;
+                        scanner.source_invalid_err = .invalid_description_parent;
                         return error.InvalidWaylandXML;
                     },
                 }
@@ -1178,7 +1178,7 @@ fn pushStartElement(
     allocator: Allocator,
     protocols: *std.ArrayList(Protocol.Parsing),
 ) !void {
-    const tag: Tag = .fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
+    const tag: Tag = Tag.fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
         scanner.source_invalid_err = .unsupported_tag;
         break :no_tag error.InvalidWaylandXML;
     };
@@ -1227,11 +1227,13 @@ fn pushStartElement(
                             .request => Request.Parsing,
                             .event => Event.Parsing,
                             .@"enum" => Enum.Parsing,
+                            else => comptime unreachable,
                         };
                         const child_tag: Interface.ChildTag = switch (child_obj) {
                             .request => .request,
                             .event => .event,
                             .@"enum" => .@"enum",
+                            else => comptime unreachable,
                         };
 
                         const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
@@ -1293,7 +1295,7 @@ fn pushStartElement(
 
             // Tag hierarchy was validated above
             assert(top == null);
-            const parsing: Protocol.Parsing = try .init(allocator);
+            var parsing: Protocol.Parsing = try .init(allocator);
             parsing.name = name;
             try protocols.append(allocator, parsing);
         },
@@ -1346,7 +1348,7 @@ fn pushStartElement(
 
             // Tag hierarchy was validated above
             assert(top == .protocol);
-            const parsing: Interface.Parsing = try .init(allocator);
+            var parsing: Interface.Parsing = try .init(allocator);
             parsing.name = name;
             parsing.version = version;
             try protocols.items[protocols.items.len-1].interfaces.append(allocator, parsing);
@@ -1424,11 +1426,13 @@ fn pushStartElement(
                         .request => .request,
                         .event => .event,
                         .@"enum" => .@"enum",
+                        else => unreachable,
                     };
                     const parsing: switch (object_tag) {
                         .request => Request.Parsing,
                         .event => Event.Parsing,
                         .@"enum" => Enum.Parsing,
+                        else => unreachable,
                     } = try .init(allocator);
 
                     try last_interface.objects.append(allocator, @unionInit(
@@ -1472,7 +1476,7 @@ fn pushStartElement(
                     }
                 } else if ( mem.eql(u8, "value", attr_name) ) {
                     if (value == null) {
-                        value = try allocator.dupe(attr_value);
+                        value = try allocator.dupe(u8, attr_value);
                     } else {
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
@@ -1628,7 +1632,7 @@ fn pushEndElement(
     allocator: Allocator,
     protocols: *std.ArrayList(Protocol.Parsing),
 ) !void {
-    const tag: Tag = .fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
+    const tag: Tag = Tag.fromString(scanner.tag_name_buffer.items) orelse return no_tag: {
         scanner.source_invalid_err = .unsupported_tag;
         break :no_tag error.InvalidWaylandXML;
     };
@@ -1656,7 +1660,7 @@ fn pushEndElement(
                         break :interface_dest &last.description_long;
                     } else {
                         scanner.source_invalid_err = .clobber;
-                        return error.InvalidWaylandXML;
+                        break :interface_dest error.InvalidWaylandXML;
                     }
                 },
 
@@ -1665,11 +1669,13 @@ fn pushEndElement(
                         .request => Request.Parsing,
                         .event => Event.Parsing,
                         .@"enum" => Enum.Parsing,
+                        else => unreachable,
                     };
                     const child_tag: Interface.ChildTag = switch (child_obj) {
                         .request => .request,
                         .event => .event,
                         .@"enum" => .@"enum",
+                        else => unreachable,
                     };
 
                     const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
@@ -1684,8 +1690,13 @@ fn pushEndElement(
                         break :interface_child_dest &last.description_long;
                     } else {
                         scanner.source_invalid_err = .clobber;
-                        return error.InvalidWaylandXML;
+                        break :interface_child_dest error.InvalidWaylandXML;
                     }
+                },
+
+                else => {
+                    scanner.source_invalid_err = .invalid_description_parent;
+                    return error.InvalidWaylandXML;
                 },
             };
 
@@ -1700,7 +1711,7 @@ fn pushEndElement(
                 return error.InvalidWaylandXML;
             }
 
-            const protocol: *Protocol.Parsing = protocols.items[protocols.items.len-1];
+            const protocol: *Protocol.Parsing = &protocols.items[protocols.items.len-1];
             if (protocol.copyright != null) {
                 scanner.source_invalid_err = .clobber;
                 return error.InvalidWaylandXML;
@@ -1819,7 +1830,7 @@ pub const FinalizeError = error{ MissingAttribute } || Allocator.Error;
 pub const Protocol = struct {
     name: []const u8,
     copyright: ?[]const u8,
-    interfaces: []Interface,
+    interfaces: []const Interface,
 
     /// Recursively deinit the nested parse objects.
     /// Prefer instead to init and bulk-deinit this parse structure with an arena.
@@ -1842,10 +1853,18 @@ pub const Protocol = struct {
             };
         }
 
-        fn finalize(parsing: Parsing, allocator: Allocator) FinalizeError!Protocol {
+        pub fn deinit(parsing: *Parsing, allocator: Allocator) void {
+            for (parsing.interfaces.items) |*interface| interface.deinit(allocator);
+            parsing.interfaces.deinit(allocator);
+            if (parsing.copyright) |copyright| allocator.free(copyright);
+            if (parsing.name) |name| allocator.free(name);
+            parsing.* = undefined;
+        }
+
+        fn finalize(parsing: *Parsing, allocator: Allocator) FinalizeError!Protocol {
             const interfaces = try allocator.alloc(Interface, parsing.interfaces.items.len);
             errdefer allocator.free(interfaces);
-            for (interfaces, parsing.interfaces.items) |*new, old| new.* = try old.finalize(allocator);
+            for (interfaces, parsing.interfaces.items) |*new, *old| new.* = try old.finalize(allocator);
             parsing.interfaces.deinit(allocator);
             return .{
                 .name = parsing.name orelse return error.MissingAttribute,
@@ -1861,7 +1880,7 @@ pub const Interface = struct {
     version: VersionNumber,
     description_short: ?[]const u8,
     description_long: ?[]const u8,
-    objects: []Interface.Object,
+    objects: []const Interface.Object,
 
     pub fn deinit(interface: Interface, allocator: Allocator) void {
         for (interface.objects) |object| {
@@ -1891,11 +1910,22 @@ pub const Interface = struct {
             };
         }
 
-        fn finalize(parsing: Parsing, allocator: Allocator) FinalizeError!Interface {
+        pub fn deinit(parsing: *Parsing, allocator: Allocator) void {
+            for (parsing.objects.items) |*object| switch (object.*) {
+                inline else => |*obj| obj.deinit(allocator),
+            };
+            parsing.objects.deinit(allocator);
+            if (parsing.description_long) |description| allocator.free(description);
+            if (parsing.description_short) |description| allocator.free(description);
+            if (parsing.name) |name| allocator.free(name);
+            parsing.* = undefined;
+        }
+
+        fn finalize(parsing: *Parsing, allocator: Allocator) FinalizeError!Interface {
             const objects = try allocator.alloc(Interface.Object, parsing.objects.items.len);
             errdefer allocator.free(objects);
-            for (objects, parsing.objects.items) |*new, old| new.* = switch (old) {
-                inline else => |obj, tag| @unionInit(
+            for (objects, parsing.objects.items) |*new, *old| new.* = switch (old.*) {
+                inline else => |*obj, tag| @unionInit(
                     Interface.Object,
                     @tagName(tag),
                     try obj.finalize(allocator),
@@ -1932,7 +1962,7 @@ pub const Request = struct {
     since: ?VersionNumber,
     description_short: ?[]const u8,
     description_long: ?[]const u8,
-    args: []Arg,
+    args: []const Arg,
 
     pub fn deinit(request: Request, allocator: Allocator) void {
         for (request.args) |arg| arg.deinit(allocator);
@@ -1958,7 +1988,16 @@ pub const Request = struct {
             };
         }
 
-        fn finalize(parsing: Parsing, allocator: Allocator) FinalizeError!Request {
+        pub fn deinit(parsing: *Parsing, allocator: Allocator) void {
+            for (parsing.args.items) |*arg| arg.deinit(allocator);
+            parsing.args.deinit(allocator);
+            if (parsing.description_long) |description| allocator.free(description);
+            if (parsing.description_short) |description| allocator.free(description);
+            if (parsing.name) |name| allocator.free(name);
+            parsing.* = undefined;
+        }
+
+        fn finalize(parsing: *Parsing, allocator: Allocator) FinalizeError!Request {
             return .{
                 .name = parsing.name orelse return error.MissingAttribute,
                 .since = parsing.since,
@@ -1975,7 +2014,7 @@ pub const Event = struct {
     since: ?VersionNumber,
     description_short: ?[]const u8,
     description_long: ?[]const u8,
-    args: []Arg,
+    args: []const Arg,
 
     pub fn deinit(event: Event, allocator: Allocator) void {
         for (event.args) |arg| arg.deinit(allocator);
@@ -2001,7 +2040,16 @@ pub const Event = struct {
             };
         }
 
-        fn finalize(parsing: Parsing, allocator: Allocator) FinalizeError!Event {
+        pub fn deinit(parsing: *Parsing, allocator: Allocator) void {
+            for (parsing.args.items) |*arg| arg.deinit(allocator);
+            parsing.args.deinit(allocator);
+            if (parsing.description_long) |description| allocator.free(description);
+            if (parsing.description_short) |description| allocator.free(description);
+            if (parsing.name) |name| allocator.free(name);
+            parsing.* = undefined;
+        }
+
+        fn finalize(parsing: *Parsing, allocator: Allocator) FinalizeError!Event {
             return .{
                 .name = parsing.name orelse return error.MissingAttribute,
                 .since = parsing.since,
@@ -2019,7 +2067,7 @@ pub const Enum = struct {
     description_short: ?[]const u8,
     description_long: ?[]const u8,
     bitfield: bool,
-    entries: []Entry,
+    entries: []const Entry,
 
     pub fn deinit(@"enum": Enum, allocator: Allocator) void {
         for (@"enum".entries) |entry| entry.deinit(allocator);
@@ -2047,7 +2095,16 @@ pub const Enum = struct {
             };
         }
 
-        fn finalize(parsing: Parsing, allocator: Allocator) FinalizeError!Enum {
+        pub fn deinit(parsing: *Parsing, allocator: Allocator) void {
+            for (parsing.entries.items) |*entry| entry.deinit(allocator);
+            parsing.entries.deinit(allocator);
+            if (parsing.description_long) |description| allocator.free(description);
+            if (parsing.description_short) |description| allocator.free(description);
+            if (parsing.name) |name| allocator.free(name);
+            parsing.* = undefined;
+        }
+
+        fn finalize(parsing: *Parsing, allocator: Allocator) FinalizeError!Enum {
             return .{
                 .name = parsing.name orelse return error.MissingAttribute,
                 .since = parsing.since,
@@ -2087,6 +2144,13 @@ pub const Arg = struct {
             .allow_null = null,
             .summary = null,
         };
+
+        pub fn deinit(parsing: *Parsing, allocator: Allocator) void {
+            if (parsing.summary) |summary| allocator.free(summary);
+            if (parsing.interface) |interface| allocator.free(interface);
+            if (parsing.name) |name| allocator.free(name);
+            parsing.* = undefined;
+        }
 
         fn finalize(parsing: Parsing) error{MissingAttribute}!Arg {
             return .{
@@ -2144,6 +2208,13 @@ pub const Entry = struct {
             .summary = null,
         };
 
+        pub fn deinit(parsing: *Parsing, allocator: Allocator) void {
+            if (parsing.summary) |summary| allocator.free(summary);
+            if (parsing.value) |value| allocator.free(value);
+            if (parsing.name) |name| allocator.free(name);
+            parsing.* = undefined;
+        }
+
         fn finalize(parsing: Parsing) error{MissingAttribute}!Entry {
             return .{
                 .name = parsing.name orelse return error.MissingAttribute,
@@ -2167,7 +2238,7 @@ pub const Entry = struct {
 /// outdenting and deleting trailing (non-newline) whitespace,
 /// allocating and returning the result.
 pub fn trimLiteralText(allocator: Allocator, text: []const u8) Allocator.Error![]const u8 {
-    return try allocator.dupe(text); // TODO
+    return try allocator.dupe(u8, text); // TODO
 }
 
 fn validateTagPosition(scanner: *Scanner, top: ?Tag, tag: Tag) error{InvalidWaylandXML}!void {
@@ -2184,7 +2255,7 @@ fn validateTagPosition(scanner: *Scanner, top: ?Tag, tag: Tag) error{InvalidWayl
                 return error.InvalidWaylandXML;
             }
         },
-        .request, .event, .@"enum", .description => {
+        .request, .event, .@"enum" => {
             if (top != .interface) {
                 scanner.source_invalid_err = .interface_child_not;
                 return error.InvalidWaylandXML;
@@ -2245,6 +2316,1160 @@ fn isNewline(char: u8, last_char: u8) bool {
 
 /// Integer type of parsed version strings
 pub const VersionNumber = u8;
+
+test "maximal valid protocol" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<protocol name="minimal">
+        \\    <interface name="foo" version="1"/>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    const protocols: []const Protocol = try scanner.parse(testing.allocator, &xml);
+    defer { for (protocols) |protocol| protocol.deinit(testing.allocator); }
+
+    try testing.expectEqualDeep(@as([]const Protocol, &.{ .{
+        .name = "minimal",
+        .copyright = null,
+        .interfaces = &.{ .{
+            .name = "foo",
+            .version = 1,
+            .description_short = null,
+            .description_long = null,
+            .objects = &.{},
+        }},
+    }}), protocols);
+}
+
+test "interface with description only" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="described_interface">
+        \\    <interface name="foo" version="1">
+        \\        <description summary="short">
+        \\            Long description text.
+        \\            Can span multiple lines.
+        \\        </description>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    const protocols: []const Protocol = try scanner.parse(testing.allocator, &xml);
+    defer { for (protocols) |protocol| protocol.deinit(testing.allocator); }
+
+    try testing.expectEqualDeep(@as([]const Protocol, &.{ .{
+        .name = "described_interface",
+        .copyright = null,
+        .interfaces = &.{ .{
+            .name = "foo",
+            .version = 1,
+            .description_short = "short",
+            .description_long =
+                \\Long description text.
+                \\Can span multiple lines.
+            ,
+            .objects = &.{},
+        }},
+    }}), protocols);
+}
+
+test "interface with request, no args" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="request_only">
+        \\    <interface name="foo" version="1">
+        \\        <request name="ping"/>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    const protocols: []const Protocol = try scanner.parse(testing.allocator, &xml);
+    defer { for (protocols) |protocol| protocol.deinit(testing.allocator); }
+
+    try testing.expectEqualDeep(@as([]const Protocol, &.{ .{
+        .name = "request_only",
+        .copyright = null,
+        .interfaces = &.{ .{
+            .name = "foo",
+            .version = 1,
+            .description_short = null,
+            .description_long = null,
+            .objects = &.{
+                .{ .request = .{
+                    .name = "ping",
+                    .since = null,
+                    .description_short = null,
+                    .description_long = null,
+                    .args = &.{},
+                }},
+            },
+        }},
+    }}), protocols);
+}
+
+test "request with all argument types" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="all_args">
+        \\    <interface name="foo" version="1">
+        \\        <request name="everything">
+        \\            <arg name="a" type="int"/>
+        \\            <arg name="b" type="uint"/>
+        \\            <arg name="c" type="fixed"/>
+        \\            <arg name="d" type="string"/>
+        \\            <arg name="e" type="array"/>
+        \\            <arg name="f" type="fd"/>
+        \\            <arg name="g" type="object" interface="foo" allow-null="true"/>
+        \\            <arg name="h" type="new_id" interface="foo"/>
+        \\        <request/>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    const protocols: []const Protocol = try scanner.parse(testing.allocator, &xml);
+    defer { for (protocols) |protocol| protocol.deinit(testing.allocator); }
+
+    try testing.expectEqualDeep(@as([]const Protocol, &.{ .{
+        .name = "all_args",
+        .copyright = null,
+        .interfaces = &.{ .{
+            .name = "foo",
+            .version = 1,
+            .description_short = null,
+            .description_long = null,
+            .objects = &.{
+                .{ .request = .{
+                    .name = "everything",
+                    .since = null,
+                    .description_short = null,
+                    .description_long = null,
+                    .args = &.{
+                        .{
+                            .name = "a",
+                            .@"type" = .int,
+                            .interface = null,
+                            .allow_null = null,
+                            .summary = null,
+                        },
+                        .{
+                            .name = "b",
+                            .@"type" = .uint,
+                            .interface = null,
+                            .allow_null = null,
+                            .summary = null,
+                        },
+                        .{
+                            .name = "c",
+                            .@"type" = .fixed,
+                            .interface = null,
+                            .allow_null = null,
+                            .summary = null,
+                        },
+                        .{
+                            .name = "d",
+                            .@"type" = .string,
+                            .interface = null,
+                            .allow_null = null,
+                            .summary = null,
+                        },
+                        .{
+                            .name = "e",
+                            .@"type" = .array,
+                            .interface = null,
+                            .allow_null = null,
+                            .summary = null,
+                        },
+                        .{
+                            .name = "f",
+                            .@"type" = .fd,
+                            .interface = null,
+                            .allow_null = null,
+                            .summary = null,
+                        },
+                        .{
+                            .name = "g",
+                            .@"type" = .object,
+                            .interface = "foo",
+                            .allow_null = true,
+                            .summary = null,
+                        },
+                        .{
+                            .name = "h",
+                            .@"type" = .new_id,
+                            .interface = "foo",
+                            .allow_null = null,
+                            .summary = null,
+                        },
+                    },
+                }},
+            },
+        }},
+    }}), protocols);
+}
+
+test "event with arguments and description" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="event_example">
+        \\    <interface name="foo" version="1">
+        \\        <event name="changed">
+        \\            <description summary="notification">
+        \\                Sent when something changes.
+        \\            </description>
+        \\            <arg name="value" type="int"/>
+        \\        </event>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    const protocols: []const Protocol = try scanner.parse(testing.allocator, &xml);
+    defer { for (protocols) |protocol| protocol.deinit(testing.allocator); }
+
+    try testing.expectEqualDeep(@as([]const Protocol, &.{ .{
+        .name = "event_example",
+        .copyright = null,
+        .interfaces = &.{ .{
+            .name = "foo",
+            .version = 1,
+            .description_short = null,
+            .description_long = null,
+            .objects = &.{
+                .{ .event = .{
+                    .name = "changed",
+                    .since = null,
+                    .description_short = "notification",
+                    .description_long =
+                        \\Sent when something changes.
+                    ,
+                    .args = &.{
+                        .{
+                            .name = "value",
+                            .@"type" = .int,
+                            .interface = null,
+                            .allow_null = null,
+                            .summary = null,
+                        },
+                    },
+                }},
+            },
+        }},
+    }}), protocols);
+}
+
+test "non-bitfield enum" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="enum_example">
+        \\    <interface name="foo" version="1">
+        \\        <enum name="error">
+        \\            <description summary="error codes">
+        \\                Error conditions.
+        \\            </description>
+        \\            <entry name="ok" value="0"/>
+        \\            <entry name="failed" value="1"/>
+        \\        </enum>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    const protocols: []const Protocol = try scanner.parse(testing.allocator, &xml);
+    defer { for (protocols) |protocol| protocol.deinit(testing.allocator); }
+
+    try testing.expectEqualDeep(@as([]const Protocol, &.{ .{
+        .name = "enum_example",
+        .copyright = null,
+        .interfaces = &.{ .{
+            .name = "foo",
+            .version = 1,
+            .description_short = null,
+            .description_long = null,
+            .objects = &.{
+                .{ .@"enum" = .{
+                    .name = "error",
+                    .since = null,
+                    .description_short = "error codes",
+                    .description_long =
+                        \\Error conditions.
+                    ,
+                    .bitfield = false,
+                    .entries = &.{
+                        .{
+                            .name = "ok",
+                            .value = "0",
+                            .summary = null,
+                        },
+                        .{
+                            .name = "failed",
+                            .value = "1",
+                            .summary = null,
+                        },
+                    },
+                }},
+            },
+        }},
+    }}), protocols);
+}
+
+test "bitfield enum" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="bitfield_enum">
+        \\    <interface name="foo" version="1">
+        \\        <enum name="flags" bitfield="true">
+        \\            <entry name="one" value="1"/>
+        \\            <entry name="two" value="2"/>
+        \\            <entry name="four" value="4"/>
+        \\        </enum>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    const protocols: []const Protocol = try scanner.parse(testing.allocator, &xml);
+    defer { for (protocols) |protocol| protocol.deinit(testing.allocator); }
+
+    try testing.expectEqualDeep(@as([]const Protocol, &.{ .{
+        .name = "bitfield_enum",
+        .copyright = null,
+        .interfaces = &.{ .{
+            .name = "foo",
+            .version = 1,
+            .description_short = null,
+            .description_long = null,
+            .objects = &.{
+                .{ .@"enum" = .{
+                    .name = "error",
+                    .since = null,
+                    .description_short = null,
+                    .description_long = null,
+                    .bitfield = true,
+                    .entries = &.{
+                        .{
+                            .name = "one",
+                            .value = "1",
+                            .summary = null,
+                        },
+                        .{
+                            .name = "two",
+                            .value = "2",
+                            .summary = null,
+                        },
+                        .{
+                            .name = "four",
+                            .value = "4",
+                            .summary = null,
+                        },
+                    },
+                }},
+            },
+        }},
+    }}), protocols);
+}
+
+test "since attribute usage" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="since_example">
+        \\    <interface name="foo" version="3">
+        \\        <request name="old_method"/>
+        \\        <request name="new_method" since="2"/>
+        \\        <event name="new_event" since="3"/>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    const protocols: []const Protocol = try scanner.parse(testing.allocator, &xml);
+    defer { for (protocols) |protocol| protocol.deinit(testing.allocator); }
+
+    try testing.expectEqualDeep(@as([]const Protocol, &.{ .{
+        .name = "since_example",
+        .copyright = null,
+        .interfaces = &.{ .{
+            .name = "foo",
+            .version = 3,
+            .description_short = null,
+            .description_long = null,
+            .objects = &.{
+                .{ .request = .{
+                    .name = "old_method",
+                    .since = null,
+                    .description_short = null,
+                    .description_long = null,
+                    .args = &.{},
+                }},
+                .{ .request = .{
+                    .name = "new_method",
+                    .since = 2,
+                    .description_short = null,
+                    .description_long = null,
+                    .args = &.{},
+                }},
+                .{ .event = .{
+                    .name = "new_event",
+                    .since = 3,
+                    .description_short = null,
+                    .description_long = null,
+                    .args = &.{},
+                }},
+            },
+        }},
+    }}), protocols);
+}
+
+test "multiple interfaces in one protocol" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="multi_interface">
+        \\    <interface name="bar" version="1"/>
+        \\
+        \\    <interface name="foo" version="1">
+        \\        <request name="use_bar">
+        \\            <arg name="obj" type="object" interface="bar"/>
+        \\        </request>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    const protocols: []const Protocol = try scanner.parse(testing.allocator, &xml);
+    defer { for (protocols) |protocol| protocol.deinit(testing.allocator); }
+
+    try testing.expectEqualDeep(@as([]const Protocol, &.{ .{
+        .name = "multi_interface",
+        .copyright = null,
+        .interfaces = &.{
+            .{
+                .name = "bar",
+                .version = 1,
+                .description_short = null,
+                .description_long = null,
+                .objects = &.{},
+            },
+            .{
+                .name = "foo",
+                .version = 1,
+                .description_short = null,
+                .description_long = null,
+                .objects = &.{
+                    .{ .request = .{
+                        .name = "create",
+                        .since = null,
+                        .description_short = null,
+                        .description_long = null,
+                        .args = &.{
+                            .{
+                                .name = "obj",
+                                .@"type" = .object,
+                                .interface = "bar",
+                                .allow_null = null,
+                                .summary = null,
+                            },
+                        },
+                    }},
+                },
+            },
+        },
+    }}), protocols);
+}
+
+test "maximal complete protocol" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="complete">
+        \\    <copyright>
+        \\        Copyright (C) Example
+        \\        MIT License
+        \\    </copyright>
+        \\
+        \\    <interface name="foo" version="2">
+        \\        <description summary="main interface">
+        \\            This interface demonstrates all features.
+        \\        </description>
+        \\
+        \\        <enum name="state">
+        \\            <entry name="idle" value="0"/>
+        \\            <entry name="active" value="1"/>
+        \\        </enum>
+        \\
+        \\        <request name="set_state" since="2">
+        \\            <arg name="state" type="uint"/>
+        \\        </request>
+        \\
+        \\        <event name="state_changed">
+        \\            <arg name="state" type="uint"/>
+        \\        </event>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    const protocols: []const Protocol = try scanner.parse(testing.allocator, &xml);
+    defer { for (protocols) |protocol| protocol.deinit(testing.allocator); }
+
+    try testing.expectEqualDeep(@as([]const Protocol, &.{ .{
+        .name = "complete",
+        .copyright =
+            \\Copyright (C) Example
+            \\MIT License
+        ,
+        .interfaces = &.{
+            .{
+                .name = "foo",
+                .version = 2,
+                .description_short = "main interface",
+                .description_long =
+                    \\This interface demonstrates all features.
+                ,
+                .objects = &.{
+                    .{ .@"enum" = .{
+                        .name = "state",
+                        .since = null,
+                        .description_short = null,
+                        .description_long = null,
+                        .bitfield = false,
+                        .entries = &.{
+                            .{
+                                .name = "idle",
+                                .value = "0",
+                                .summary = null,
+                            },
+                            .{
+                                .name = "active",
+                                .value = "1",
+                                .summary = null,
+                            },
+                        },
+                    }},
+                    .{ .request = .{
+                        .name = "set_state",
+                        .since = 2,
+                        .description_short = null,
+                        .description_long = null,
+                        .args = &.{
+                            .{
+                                .name = "state",
+                                .@"type" = .uint,
+                                .interface = null,
+                                .allow_null = null,
+                                .summary = null,
+                            },
+                        },
+                    }},
+                    .{ .event = .{
+                        .name = "state_changed",
+                        .since = null,
+                        .description_short = null,
+                        .description_long = null,
+                        .args = &.{
+                            .{
+                                .name = "state",
+                                .@"type" = .uint,
+                                .interface = null,
+                                .allow_null = null,
+                                .summary = null,
+                            },
+                        },
+                    }},
+                },
+            },
+        },
+    }}), protocols);
+}
+
+test "mismatched end tag" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <interface name="foo" version="1">
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.mismatched_tag_close, scanner.source_invalid_err);
+}
+
+test "unclosed tag" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <interface name="foo" version="1">
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.broken_tag, scanner.source_invalid_err);
+}
+
+test "invalid nesting" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <interface name="foo" version="1">
+        \\        <request name="bar">
+        \\    </interface>
+        \\    </request>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.mismatched_tag_close, scanner.source_invalid_err);
+}
+
+test "declaration after start" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <interface name="foo" version="1">
+        \\        <request name="bar">
+        \\    </interface>
+        \\    </request>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "doctype preset" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<!DOCTYPE protocol>
+        \\<protocol name="test"/>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "CDATA usage" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <interface name="foo" version="1">
+        \\        <description><![CDATA[hello]]></description>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "unknown root tag" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<foo>
+        \\    <protocol name="test"/>
+        \\</foo>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "unknown tag" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <meow/>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "arg as protocol child" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <arg name="x" type="int"/>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.invalid_arg_parent, scanner.source_invalid_err);
+}
+
+test "missing protocol name" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.invalid_attributes, scanner.source_invalid_err);
+}
+
+test "missing interface version" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <interface name="foo"/>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.invalid_attributes, scanner.source_invalid_err);
+}
+
+test "missing request name" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <interface name="foo" version="1">
+        \\        <request><request/>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.invalid_attributes, scanner.source_invalid_err);
+}
+
+test "missing arg type" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <interface name="foo" version="1">
+        \\        <request name="bar">
+        \\            <arg name="x"/>
+        \\        <request/>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.invalid_attributes, scanner.source_invalid_err);
+}
+
+test "unknown attribute" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test" foo="bar"/>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.invalid_attributes, scanner.source_invalid_err);
+}
+
+test "illegal attribute on tag" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <interface name="foo" version="1" since="2"/>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.invalid_attributes, scanner.source_invalid_err);
+}
+
+test "invalid name characters" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <interface name="Foo-Bar" version="1"/>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.invalid_attributes, scanner.source_invalid_err);
+}
+
+test "version not a positive integer" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" version="0"/>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.invalid_attributes, scanner.source_invalid_err);
+}
+
+test "since greater than interface version" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" version="1">
+    //    \\        <request name="bar" since="2"/>
+    //    \\    </interface>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.invalid_attributes, scanner.source_invalid_err);
+}
+
+test "invalid arg type" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" version="1">
+    //    \\        <request name="bar">
+    //    \\            <arg name="x" type="float"/>
+    //    \\        </request>
+    //    \\    </interface>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "object arg missing interface" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" version="1">
+    //    \\        <request name="bar">
+    //    \\            <arg name="x" type="object"/>
+    //    \\        </request>
+    //    \\    </interface>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "allow-null on non-object" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" version="1">
+    //    \\        <request name="bar">
+    //    \\            <arg name="x" type="int" allow-null="true"/>
+    //    \\        </request>
+    //    \\    </interface>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "invalid allow-null value" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" version="1">
+    //    \\        <request name="bar">
+    //    \\            <arg name="x" type="object" interface="foo" allow-null="yes"/>
+    //    \\        </request>
+    //    \\    </interface>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+
+test "enum without entries" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" version="1">
+    //    \\        <enum name="foo"/>
+    //    \\    </interface>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "entry missing value" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" version="1">
+    //    \\        <enum name="foo">
+    //    \\            <entry name="bar"/>
+    //    \\        </enum>
+    //    \\    </interface>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "duplicate enum entry values" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" version="1">
+    //    \\        <enum name="foo">
+    //    \\            <entry name="bar" value="1"/>
+    //    \\            <entry name="bar" value="1"/>
+    //    \\        </enum>
+    //    \\    </interface>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "bitfield enum with non-power-of-two" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" version="1">
+    //    \\        <enum name="foo" bitfield="true">
+    //    \\            <entry name="bad" value="3"/>
+    //    \\        </enum>
+    //    \\    </interface>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "description with nested tags" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <interface name="foo" version="1">
+        \\        <description>
+        \\            <b>bold</b>
+        \\        </description>
+        \\    </interface>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "entry outside enum" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <entry name="x" value="1"/>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.invalid_entry_parent, scanner.source_invalid_err);
+}
+
+test "arg outside request or event" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test">
+        \\    <arg name="x" type="int"/>
+        \\</protocol>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.invalid_arg_parent, scanner.source_invalid_err);
+}
+
+test "non-utf-8 encoding declaration" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<?xml version="1.0" encoding="ISO-8859-1"?>
+        \\<protocol name="test"/>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.UnsupportedEncoding, scanner.parse(testing.allocator, &xml));
+}
+
+test "non-beginning XML declaration" {
+    var scanner: Scanner = try .init(testing.allocator);
+    defer scanner.deinit(testing.allocator);
+
+    var xml: Io.Reader = .fixed(
+        \\<protocol name="test"/>
+        \\<?xml version="1.0"?>
+    );
+
+    scanner.newStream();
+    try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "duplicate interface names" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" value="1"/>
+    //    \\    <interface name="foo" value="2"/>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
+
+test "duplicate request names" {
+    // TODO
+    return error.SkipZigTest;
+    //var scanner: Scanner = try .init(testing.allocator);
+    //defer scanner.deinit(testing.allocator);
+
+    //var xml: Io.Reader = .fixed(
+    //    \\<protocol name="test">
+    //    \\    <interface name="foo" value="1">
+    //    \\        <request name="bar"/>
+    //    \\        <request name="bar"/>
+    //    \\    </interface>
+    //    \\</protocol>
+    //);
+
+    //scanner.newStream();
+    //try testing.expectError(error.InvalidWaylandXML, scanner.parse(testing.allocator, &xml));
+    //try testing.expectEqual(SourceInvalidError.unsupported_tag, scanner.source_invalid_err);
+}
 
 /// A simple dynamic string list for collecting attribute names and values
 const StringList = struct {
@@ -2317,5 +3542,6 @@ const Allocator = std.mem.Allocator;
 const mem = std.mem;
 const fmt = std.fmt;
 const log = std.log;
+const testing = std.testing;
 
 const std = @import("std");
