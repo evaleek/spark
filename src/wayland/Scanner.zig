@@ -2297,7 +2297,7 @@ fn validateTagPosition(scanner: *Scanner, top: ?Tag, tag: Tag) error{InvalidWayl
             }
         },
         .arg => {
-            if (top != .request or top != .event) {
+            if (top != .request and top != .event) {
                 scanner.source_invalid_err = .invalid_arg_parent;
                 return error.InvalidWaylandXML;
             }
