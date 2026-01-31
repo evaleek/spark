@@ -2237,8 +2237,36 @@ pub const Entry = struct {
 /// Format XML literal text blocks by
 /// outdenting and deleting trailing (non-newline) whitespace,
 /// allocating and returning the result.
-pub fn trimLiteralText(allocator: Allocator, text: []const u8) Allocator.Error![]const u8 {
-    return try allocator.dupe(u8, text); // TODO
+pub fn trimLiteralText(allocator: Allocator, text: []const u8) ![]const u8 {
+    // TODO support non-Unix newlines
+    for (text) |c| { if (c == '\r') return error.UnsupportedEncoding; }
+
+    var iter = mem.splitScalar(u8, mem.trim(u8, text, &std.ascii.whitespace), '\n');
+
+    const result_len: usize = scan: {
+        var count: usize = 0;
+        while (iter.next()) |line| {
+            const trimmed = mem.trim(u8, line, &std.ascii.whitespace);
+            count += trimmed.len;
+        }
+        break :scan count;
+    };
+
+    iter.reset();
+
+    const result = try allocator.alloc(u8, result_len);
+    errdefer allocator.free(result);
+
+    {
+        var result_idx: usize = 0;
+        while (iter.next()) |line| {
+            const trimmed = mem.trim(u8, line, &std.ascii.whitespace);
+            @memcpy(result[result_idx..][0..trimmed.len], trimmed);
+            result_idx += trimmed.len;
+        }
+    }
+
+    return result;
 }
 
 fn validateTagPosition(scanner: *Scanner, top: ?Tag, tag: Tag) error{InvalidWaylandXML}!void {
