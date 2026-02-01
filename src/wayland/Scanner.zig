@@ -2260,7 +2260,7 @@ pub fn trimLiteralText(allocator: Allocator, text: []const u8) ![]const u8 {
         var count: usize = 0;
         while (iter.next()) |line| {
             const trimmed = mem.trim(u8, line, &std.ascii.whitespace);
-            count += trimmed.len;
+            count += if (iter.index!=null) trimmed.len + 1 else trimmed.len;
         }
         break :scan count;
     };
@@ -2276,6 +2276,10 @@ pub fn trimLiteralText(allocator: Allocator, text: []const u8) ![]const u8 {
             const trimmed = mem.trim(u8, line, &std.ascii.whitespace);
             @memcpy(result[result_idx..][0..trimmed.len], trimmed);
             result_idx += trimmed.len;
+            if (iter.index != null) {
+                result[result_idx] = '\n';
+                result_idx += 1;
+            }
         }
     }
 
