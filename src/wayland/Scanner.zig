@@ -1165,11 +1165,113 @@ fn pushEmptyElement(
             }
         },
 
-        .request, .event, .@"enum" => {
+        .request, .event, .@"enum" => |interface_object_tag| {
             @branchHint(.unlikely);
-            // Doesn't make sense, and does not map to valid parsed output
-            scanner.source_invalid_err = .invalid_self_closing;
-            return error.InvalidWaylandXML;
+            var name: ?[]const u8 = null;
+            var since: ?VersionNumber = null;
+            var bitfield: ?bool = null;
+            errdefer {
+                if (name) |n| allocator.free(n);
+            }
+
+            for (0..attribute_count) |attribute_index| {
+                const attr_name = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
+
+                if ( mem.eql(u8, "name", attr_name) ) {
+                    if (name == null) {
+                        name = try allocator.dupe(u8, attr_value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "since", attr_name) ) {
+                    if (since == null) {
+                        if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
+                            since = number;
+                        } else |err| {
+                            if (err == error.Overflow) std.log.err(
+                                "\'since\' string \'{s}\' overflows the version number type"
+                                    ++ @typeName(VersionNumber),
+                                .{ attr_value },
+                            );
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "bitfield", attr_name) ) {
+                    if (interface_object_tag == .@"enum" and bitfield == null) {
+                        if ( mem.eql(u8, "true", attr_value) ) {
+                            bitfield = true;
+                        } else if ( mem.eql(u8, "false", attr_value) ) {
+                            bitfield = false;
+                        } else {
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else {
+                    scanner.source_invalid_err = .invalid_attributes;
+                    return error.InvalidWaylandXML;
+                }
+            }
+
+            if (name == null) {
+                scanner.source_invalid_err = .invalid_attributes;
+                return error.InvalidWaylandXML;
+            }
+
+            // Tag hierarchy was validated above
+            assert(top == .interface);
+
+            const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+            const last_interface: *Interface.Parsing = &interfaces[interfaces.len-1];
+            switch (interface_object_tag) {
+                inline else => |object_tag| {
+                    const interface_child: Interface.ChildTag = switch (object_tag) {
+                        .request => .request,
+                        .event => .event,
+                        .@"enum" => .@"enum",
+                        else => unreachable,
+                    };
+                    const parsing = switch (comptime object_tag) {
+                        .request => Request.Parsing{
+                            .name = name,
+                            .since = since,
+                            .description_short = null,
+                            .description_long = null,
+                            .args = .empty,
+                        },
+                        .event => Event.Parsing{
+                            .name = name,
+                            .since = since,
+                            .description_short = null,
+                            .description_long = null,
+                            .args = .empty,
+                        },
+                        .@"enum" => Enum.Parsing{
+                            .name = name,
+                            .since = since,
+                            .description_short = null,
+                            .description_long = null,
+                            .bitfield = bitfield,
+                            .entries = .empty,
+                        },
+                        else => unreachable,
+                    };
+                    try last_interface.objects.append(allocator, @unionInit(
+                        Interface.Object.Parsing,
+                        @tagName(interface_child),
+                        parsing,
+                    ));
+                }
+            }
         },
     }
 
