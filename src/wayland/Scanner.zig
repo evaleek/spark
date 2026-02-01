@@ -117,6 +117,366 @@ pub fn main() !void {
     writer.interface.flush() catch return writer.err orelse error.WriteFailedMissingError;
 }
 
+pub const Opcode = u32;
+pub const BackingEnum = u32;
+
+pub const SourceFormat = struct {
+    indent: []const u8 = "    ",
+};
+
+/// Assumes multi-line strings in `protocols`
+/// use exclusively Unix newlines.
+pub fn writeProtocolSource(
+    allocator: Allocator,
+    protocols: []const Protocol,
+    writer: *Io.Writer,
+    format: SourceFormat,
+) (Allocator.Error || Io.Writer.Error)!void {
+    for (protocols) |protocol| {
+        assert(isValidName(protocol.name));
+        for (protocol.interfaces) |interface| {
+            assert(isValidName(interface.name));
+            if (interface.description_short) |description| {
+                for (description) |c| assert(c != '\n');
+            }
+        }
+    }
+
+    for (protocols, 0..) |protocol, protocol_index| {
+        if (protocol.copyright) |copyright| {
+            var line_iter = mem.splitScalar(u8, copyright, '\n');
+            while (line_iter.next()) |line| {
+                try writer.writeAll("// ");
+                try writer.writeAll(line);
+                try writer.writeByte('\n');
+            }
+        }
+
+        try writer.writeAll("pub const ");
+        try writer.writeAll(protocol.name);
+        try writer.writeAll(" = struct {\n");
+
+        for (protocol.interfaces, 0..) |interface, interface_index| {
+            try writeTagDescriptionSource(
+                writer,
+                interface.description_short,
+                interface.description_long,
+                format.indent,
+                1,
+            );
+
+            try writer.writeAll(format.indent);
+            try writer.writeAll("pub const ");
+            try writer.writeAll(interface.name);
+            try writer.writeAll(" = struct {\n");
+
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.print("pub const version = {d};\n\n", .{ interface.version });
+
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("pub const RequestCode = enum (" ++ @typeName(Opcode) ++ ") {\n");
+            {
+                var idx: usize = 0;
+                for (interface.objects) |object| {
+                    switch (object) {
+                        .request => |request| {
+                            if (request.description_short) |description| {
+                                try writer.splatBytesAll(format.indent, 3);
+                                try writer.writeAll("/// ");
+                                try writer.writeAll(description);
+                                try writer.writeByte('\n');
+                            }
+                            try writer.splatBytesAll(format.indent, 3);
+                            try writer.print("{s} = {d},\n", .{ request.name, idx });
+                            idx += 1;
+                        },
+                        else => {},
+                    }
+                }
+                try writer.splatBytesAll(format.indent, 3);
+                try writer.writeAll("_,\n");
+            }
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("};\n\n");
+
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("pub const Request = union (RequestCode) {\n");
+            {
+                for (interface.objects) |object| {
+                    switch (object) {
+                        .request => |request| {
+                            const upper_name = try upperName(allocator, request.name);
+                            defer allocator.free(upper_name);
+                            try writer.splatBytesAll(format.indent, 3);
+                            try writer.writeAll(request.name);
+                            try writer.writeAll(": ");
+                            try writer.writeAll(upper_name);
+                            try writer.writeAll(",\n");
+                        },
+                        else => {},
+                    }
+                }
+            }
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("};\n\n");
+
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("pub const EventCode = enum (" ++ @typeName(Opcode) ++ ") {\n");
+            {
+                var idx: usize = 0;
+                for (interface.objects) |object| {
+                    switch (object) {
+                        .event => |event| {
+                            if (event.description_short) |description| {
+                                try writer.splatBytesAll(format.indent, 3);
+                                try writer.writeAll("/// ");
+                                try writer.writeAll(description);
+                                try writer.writeByte('\n');
+                            }
+                            try writer.splatBytesAll(format.indent, 3);
+                            try writer.print("{s} = {d},\n", .{ event.name, idx });
+                            idx += 1;
+                        },
+                        else => {},
+                    }
+                }
+                try writer.splatBytesAll(format.indent, 3);
+                try writer.writeAll("_,\n");
+            }
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("};\n\n");
+
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("pub const Event = enum (EventCode) {\n");
+            {
+                for (interface.objects) |object| {
+                    switch (object) {
+                        .event => |event| {
+                            const upper_name = try upperName(allocator, event.name);
+                            defer allocator.free(upper_name);
+                            try writer.splatBytesAll(format.indent, 3);
+                            try writer.writeAll(event.name);
+                            try writer.writeAll(": ");
+                            try writer.writeAll(upper_name);
+                            try writer.writeAll(",\n");
+                        },
+                        else => {},
+                    }
+                }
+            }
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("};\n\n");
+
+            for (interface.objects, 0..) |object, object_index| {
+                switch (object) {
+                    .request => |request| {
+                        const upper_name = try upperName(allocator, request.name);
+                        defer allocator.free(upper_name);
+
+                        try writeTagDescriptionSource(
+                            writer,
+                            request.description_short,
+                            request.description_long,
+                            format.indent,
+                            2,
+                        );
+                        try writer.splatBytesAll(format.indent, 2);
+                        try writer.writeAll("pub const ");
+                        try writer.writeAll(upper_name);
+                        try writer.writeAll(" = struct {\n");
+
+                        try writer.splatBytesAll(format.indent, 3);
+                        try writer.writeAll("pub const since: ?comptime_int = ");
+                        if (request.since) |since| {
+                            try writer.print("{d}", .{ since });
+                        } else {
+                            try writer.writeAll("null");
+                        }
+                        try writer.writeAll(";\n\n");
+
+                        {} // TODO request body
+
+                        try writer.splatBytesAll(format.indent, 2);
+                        try writer.writeAll("};\n");
+                    },
+
+                    .event => |event| {
+                        const upper_name = try upperName(allocator, event.name);
+                        defer allocator.free(upper_name);
+
+                        try writeTagDescriptionSource(
+                            writer,
+                            event.description_short,
+                            event.description_long,
+                            format.indent,
+                            2,
+                        );
+
+                        try writer.splatBytesAll(format.indent, 2);
+                        try writer.writeAll("pub const ");
+                        try writer.writeAll(upper_name);
+                        try writer.writeAll(" = struct {\n");
+
+                        try writer.splatBytesAll(format.indent, 3);
+                        try writer.writeAll("pub const since: ?comptime_int = ");
+                        if (event.since) |since| {
+                            try writer.print("{d}", .{ since });
+                        } else {
+                            try writer.writeAll("null");
+                        }
+                        try writer.writeAll("};\n\n");
+
+                        {} // TODO event body
+
+                        try writer.splatBytesAll(format.indent, 2);
+                        try writer.writeAll("};\n");
+                    },
+
+                    .@"enum" => |@"enum"| {
+                        const upper_name = try upperName(allocator, @"enum".name);
+                        defer allocator.free(upper_name);
+
+                        try writeTagDescriptionSource(
+                            writer,
+                            @"enum".description_short,
+                            @"enum".description_long,
+                            format.indent,
+                            2,
+                        );
+
+                        const bitfield = @"enum".bitfield orelse false;
+
+                        try writer.splatBytesAll(format.indent, 2);
+                        try writer.writeAll("pub const ");
+                        try writer.writeAll(upper_name);
+                        if (!bitfield) {
+                            try writer.writeAll(" = enum (" ++ @typeName(BackingEnum) ++ ") {\n");
+                        } else {
+                            try writer.writeAll(" = packed struct (" ++ @typeName(BackingEnum) ++ ") {\n");
+                        }
+
+                        try writer.splatBytesAll(format.indent, 3);
+                        try writer.writeAll("pub const since: ?comptime_int = ");
+                        if (@"enum".since) |since| {
+                            try writer.print("{d}", .{ since });
+                        } else {
+                            try writer.writeAll("null");
+                        }
+                        try writer.writeAll("};\n\n");
+
+                        if (!bitfield) {
+                            for (@"enum".entries) |entry| {
+                                if (entry.summary) |summary| {
+                                    try writer.splatBytesAll(format.indent, 3);
+                                    try writer.writeAll("/// ");
+                                    try writer.writeAll(summary);
+                                    try writer.writeByte('\n');
+                                }
+                                try writer.splatBytesAll(format.indent, 3);
+                                try writer.writeAll(entry.name);
+                                try writer.writeAll(" = ");
+                                try writer.writeAll(entry.value);
+                                try writer.writeAll(",\n");
+                            }
+                        } else {
+                            // TODO
+                            // validation in parsing that allows these catch unreachables
+                            // include assertions in doc comment
+
+                            const entries_sorted = try allocator.dupe(Entry, @"enum".entries);
+                            defer allocator.free(entries_sorted);
+                            std.mem.sort(Entry, entries_sorted, {}, struct {
+                                fn lessThan(_: void, lhs: Entry, rhs: Entry) bool {
+                                    const lhs_int = fmt.parseInt(BackingEnum, lhs.value, 0) catch unreachable;
+                                    const rhs_int = fmt.parseInt(BackingEnum, rhs.value, 0) catch unreachable;
+                                    return lhs_int < rhs_int;
+                                }
+                            }.lessThan);
+                            defer allocator.free(entries_sorted);
+
+                            var padding_idx: usize = 0;
+                            for (entries_sorted, 0..) |entry, entry_index| {
+                                const value = fmt.parseInt(BackingEnum, entry.value, 0)
+                                    catch unreachable;
+                                assert(std.math.isPowerOfTwo(value));
+                                const last_value: BackingEnum =
+                                    if (entry_index == 0) 0
+                                    else fmt.parseInt(
+                                        BackingEnum,
+                                        entries_sorted[entry_index-1].value,
+                                        0,
+                                    ) catch unreachable;
+
+                                const pre_padding_bits: u16 = @ctz(value) - (@ctz(last_value)+1);
+
+                                if (pre_padding_bits != 0) {
+                                    try writer.splatBytesAll(format.indent, 3);
+                                    try writer.print("_{d}: u{d} = 0,\n", .{ padding_idx, pre_padding_bits });
+                                    padding_idx += 1;
+                                }
+
+                                if (entry.summary) |summary| {
+                                    try writer.splatBytesAll(format.indent, 3);
+                                    try writer.writeAll("/// ");
+                                    try writer.writeAll(summary);
+                                    try writer.writeBytes('\n');
+                                }
+
+                                try writer.splatBytesAll(format.indent, 3);
+                                try writer.writeAll(entry.name);
+                                try writer.writeAll(": bool = false,\n");
+                            }
+                        }
+
+                        try writer.splatBytesAll(format.indent, 2);
+                        try writer.writeAll("};\n");
+                    },
+                }
+                if (object_index != interface.objects.len-1) try writer.writeByte('\n');
+            }
+
+            try writer.writeAll(format.indent);
+            try writer.writeAll("};\n");
+            if (interface_index != protocol.interfaces.len-1) try writer.writeByte('\n');
+        }
+
+        try writer.writeAll("};");
+        if (protocol_index != protocols.len-1) try writer.splatByteAll('\n', 2);
+    }
+}
+
+pub fn writeTagDescriptionSource(
+    writer: *Io.Writer,
+    short: ?[]const u8,
+    long: ?[]const u8,
+    indent: []const u8,
+    indentation: usize,
+) Io.Writer.Error!void {
+    if (short != null or long != null) {
+        if (short) |description| {
+            try writer.splatBytesAll(indent, indentation);
+            try writer.writeAll("/// ");
+            try writer.writeAll(description);
+            try writer.writeByte('\n');
+        }
+
+        if (short != null and long != null) {
+            try writer.splatBytesAll(indent, indentation);
+            try writer.writeAll("///\n");
+        }
+
+        if (long) |description| {
+            var line_iter = mem.splitScalar(u8, description, '\n');
+            while (line_iter.next()) |line| {
+                try writer.splatBytesAll(indent, indentation);
+                try writer.writeAll("/// ");
+                try writer.writeAll(line);
+                try writer.writeByte('\n');
+            }
+        }
+    }
+}
+
 pub const SourceInvalidError = enum {
     broken_tag,
     empty_tag_name,
@@ -2388,6 +2748,37 @@ pub fn trimLiteralText(allocator: Allocator, text: []const u8) ![]const u8 {
     return result;
 }
 
+fn upperName(allocator: Allocator, name: []const u8) Allocator.Error![]const u8 {
+    assert(isValidName(name));
+    const upper = try allocator.alloc(u8, name.len - count: {
+        var count: usize = 0;
+        for (name) |c| { if (c == '_') count += 1; }
+        break :count count;
+    });
+    errdefer allocator.free(upper);
+    var src_idx: usize = 0;
+    var dst_idx: usize = 0;
+    while (dst_idx < upper.len) {
+        if (name[src_idx] != '_') {
+            upper[dst_idx] =
+                if (src_idx == 0 or name[src_idx-1] == '_') std.ascii.toUpper(name[src_idx])
+                else name[src_idx]
+            ;
+            dst_idx += 1;
+        }
+        src_idx += 1;
+    }
+    assert(dst_idx == upper.len);
+    return upper;
+}
+
+test upperName {
+    const lower = "a__foo____bar___";
+    const upper = try upperName(testing.allocator, lower);
+    defer testing.allocator.free(upper);
+    try testing.expectEqualStrings("AFooBar", upper);
+}
+
 fn preValidateTagName(scanner: *Scanner, name: []const u8) error{InvalidWaylandXML}!void {
     if ( mem.eql(u8, "DOCTYPE", name) ) {
         scanner.source_invalid_err = .doctype_unsupported;
@@ -2468,8 +2859,7 @@ fn isNewline(char: u8, last_char: u8) bool {
     return char=='\r' or ( char=='\n' and last_char!='\r' );
 }
 
-/// Integer type of parsed version strings
-pub const VersionNumber = u8;
+pub const VersionNumber = usize;
 
 test "maximal valid protocol" {
     var scanner: Scanner = try .init(testing.allocator);
