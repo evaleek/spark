@@ -2542,7 +2542,7 @@ test "request with all argument types" {
         \\            <arg name="f" type="fd"/>
         \\            <arg name="g" type="object" interface="foo" allow-null="true"/>
         \\            <arg name="h" type="new_id" interface="foo"/>
-        \\        <request/>
+        \\        </request>
         \\    </interface>
         \\</protocol>
     );
@@ -2659,7 +2659,7 @@ test "bitfield enum" {
                 .description_long = null,
                 .objects = &.{
                     .{ .@"enum" = .{
-                        .name = "error",
+                        .name = "flags",
                         .since = null,
                         .description_short = null,
                         .description_long = null,
@@ -2766,7 +2766,7 @@ test "multiple interfaces in one protocol" {
                     .description_long = null,
                     .objects = &.{
                         .{ .request = .{
-                            .name = "create",
+                            .name = "use_bar",
                             .since = null,
                             .description_short = null,
                             .description_long = null,
