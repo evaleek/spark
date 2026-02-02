@@ -67,6 +67,7 @@ pub fn main() !void {
         if (in_file_list.items.len == 0) 1 else in_file_list.items.len,
     );
     defer protocols_list.deinit(allocator);
+    defer { for (protocols_list.items) |protocol| protocol.deinit(allocator); }
 
     if (in_file_list.items.len == 0) {
         read_buffer = undefined;
@@ -89,6 +90,7 @@ pub fn main() !void {
             },
             error.StreamIncomplete => return error.ProtocolXMLParseFailure,
         };
+        defer allocator.free(protocols);
         try protocols_list.appendSlice(allocator, protocols);
     } else for (in_file_list.items) |path| {
         read_buffer = undefined;
@@ -113,6 +115,7 @@ pub fn main() !void {
             },
             error.StreamIncomplete => return error.ProtocolXMLParseFailure,
         };
+        defer allocator.free(protocols);
         try protocols_list.appendSlice(allocator, protocols);
     }
 
