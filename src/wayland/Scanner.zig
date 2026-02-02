@@ -407,25 +407,31 @@ pub fn writeProtocolSource(
                                 .fd => try writer.writeAll("FD"),
                                 .object, .new_id => |t| {
                                     if (arg.interface) |interface_name| {
-                                        const parent_protocol_name = find_parent: {
-                                            for (protocols) |p| {
-                                                for (protocol.interfaces) |i| {
-                                                    if (mem.eql(u8, interface_name, i.name))
-                                                        break :find_parent p.name;
+                                        const parent_protocol_name: ?[]const u8 =
+                                            if (mem.eql(u8, interface_name, "wl_object")) null
+                                            else try find_parent: {
+                                                for (protocols) |p| {
+                                                    for (protocol.interfaces) |i| {
+                                                        if (mem.eql(u8, interface_name, i.name))
+                                                            break :find_parent p.name;
+                                                    }
                                                 }
-                                            }
-                                            break :find_parent null;
-                                        } orelse return error.ProtocolInvalid;
+                                                break :find_parent error.ProtocolInvalid;
+                                        };
 
-                                        const inner_upper_name = try upperName(
-                                            allocator,
-                                            if (interface_prefix) |prefix| interface_name[prefix.len..] else interface_name,
-                                        );
-                                        defer allocator.free(inner_upper_name);
+                                        if (parent_protocol_name) |parent_name| {
+                                            const inner_upper_name = try upperName(
+                                                allocator,
+                                                if (interface_prefix) |prefix| interface_name[prefix.len..] else interface_name,
+                                            );
+                                            defer allocator.free(inner_upper_name);
 
-                                        try writer.writeAll(parent_protocol_name);
-                                        try writer.writeByte('.');
-                                        try writer.writeAll(inner_upper_name);
+                                            try writer.writeAll(parent_name);
+                                            try writer.writeByte('.');
+                                            try writer.writeAll(inner_upper_name);
+                                        } else {
+                                            try writer.writeAll(format.generic_interface_type_name);
+                                        }
                                     } else {
                                         try writer.writeAll(format.generic_interface_type_name);
                                     }
@@ -469,7 +475,7 @@ pub fn writeProtocolSource(
                         } else {
                             try writer.writeAll("null");
                         }
-                        try writer.writeAll("};\n\n");
+                        try writer.writeAll(";\n\n");
 
                         if (!@"enum".bitfield) {
                             for (@"enum".entries) |entry| {
@@ -1378,7 +1384,10 @@ fn pushEmptyElement(
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
-                } else if ( mem.eql(u8, "summary", attr_name) ) {
+                } else if (
+                    mem.eql(u8, "summary", attr_name) or
+                    mem.eql(u8, "description", attr_name)
+                ) {
                     if (summary == null) {
                         summary = try allocator.dupe(u8, attr_value);
                     } else {
@@ -1471,7 +1480,10 @@ fn pushEmptyElement(
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
-                } else if ( mem.eql(u8, "summary", attr_name) ) {
+                } else if (
+                    mem.eql(u8, "summary", attr_name) or
+                    mem.eql(u8, "description", attr_name)
+                ) {
                     if (summary == null) {
                         summary = try allocator.dupe(u8, attr_value);
                     } else {
@@ -1672,6 +1684,7 @@ fn pushEmptyElement(
             var name: ?[]const u8 = null;
             var since: ?VersionNumber = null;
             var bitfield: ?bool = null;
+            var request_type: ?Request.Type = null;
             errdefer {
                 if (name) |n| allocator.free(n);
             }
@@ -1718,6 +1731,15 @@ fn pushEmptyElement(
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
+                } else if ( mem.eql(u8, "type", attr_name) ) {
+                    if (interface_object_tag == .request and request_type == null) {
+                        if (Request.Type.fromString(attr_value)) |t| {
+                            request_type = t;
+                        } else {
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    }
                 } else {
                     scanner.source_invalid_err = .invalid_attributes;
                     return error.InvalidWaylandXML;
@@ -1746,6 +1768,7 @@ fn pushEmptyElement(
                         .request => Request.Parsing{
                             .name = name,
                             .since = since,
+                            .@"type" = request_type,
                             .description_short = null,
                             .description_long = null,
                             .args = .empty,
@@ -1968,6 +1991,7 @@ fn pushStartElement(
             var name: ?[]const u8 = null;
             var since: ?VersionNumber = null;
             var bitfield: ?bool = null;
+            var request_type: ?Request.Type = null;
             errdefer {
                 if (name) |n| allocator.free(n);
             }
@@ -2014,6 +2038,15 @@ fn pushStartElement(
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
+                } else if ( mem.eql(u8, "type", attr_name) ) {
+                    if (interface_object_tag == .request and request_type == null) {
+                        if (Request.Type.fromString(attr_value)) |t| {
+                            request_type = t;
+                        } else {
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    }
                 } else {
                     scanner.source_invalid_err = .invalid_attributes;
                     return error.InvalidWaylandXML;
@@ -2046,6 +2079,7 @@ fn pushStartElement(
                     } = try .init(allocator);
                     parsing.name = name;
                     parsing.since = since;
+                    if (comptime object_tag == .request) parsing.@"type" = request_type;
                     if (comptime object_tag == .@"enum") parsing.bitfield = bitfield;
                     try last_interface.objects.append(allocator, @unionInit(
                         Interface.Object.Parsing,
@@ -2093,7 +2127,10 @@ fn pushStartElement(
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
-                } else if ( mem.eql(u8, "summary", attr_name) ) {
+                } else if (
+                    mem.eql(u8, "summary", attr_name) or
+                    mem.eql(u8, "description", attr_name)
+                ) {
                     if (summary == null) {
                         summary = try allocator.dupe(u8, attr_value);
                     } else {
@@ -2187,7 +2224,10 @@ fn pushStartElement(
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
-                } else if ( mem.eql(u8, "summary", attr_name) ) {
+                } else if (
+                    mem.eql(u8, "summary", attr_name) or
+                    mem.eql(u8, "description", attr_name)
+                ) {
                     if (summary == null) {
                         summary = try allocator.dupe(u8, attr_value);
                     } else {
@@ -2574,6 +2614,7 @@ pub const Interface = struct {
 pub const Request = struct {
     name: []const u8,
     since: ?VersionNumber,
+    @"type": ?Type,
     description_short: ?[]const u8,
     description_long: ?[]const u8,
     args: []const Arg,
@@ -2589,6 +2630,7 @@ pub const Request = struct {
     const Parsing = struct {
         name: ?[]const u8,
         since: ?VersionNumber,
+        @"type": ?Type,
         description_short: ?[]const u8,
         description_long: ?[]const u8,
         args: std.ArrayList(Arg),
@@ -2597,6 +2639,7 @@ pub const Request = struct {
             return .{
                 .name = null,
                 .since = null,
+                .@"type" = null,
                 .description_short = null,
                 .description_long = null,
                 .args = try .initCapacity(allocator, 16),
@@ -2616,11 +2659,27 @@ pub const Request = struct {
             return .{
                 .name = parsing.name orelse return error.MissingAttribute,
                 .since = parsing.since,
+                .@"type" = parsing.@"type",
                 .description_short = parsing.description_short,
                 .description_long = parsing.description_long,
                 .args = try parsing.args.toOwnedSlice(allocator),
             };
         }
+    };
+
+    pub const Type = enum {
+        destructor,
+
+        pub fn fromString(str: []const u8) ?Type {
+            return name_map.get(str);
+        }
+
+        const name_map: std.StaticStringMap(Type) = .initComptime( make: {
+            const types = std.enums.values(Type);
+            var list: [types.len]struct { []const u8, Type } = undefined;
+            for (&list, types) |*kvs, @"type"| kvs.* = .{ @tagName(@"type"), @"type" };
+            break :make list;
+        } );
     };
 };
 
