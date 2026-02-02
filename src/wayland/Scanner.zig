@@ -6,6 +6,11 @@
 /// Otherwise, it writes to stdout.
 pub const output_arg_prefix = "-o";
 
+/// An argument to this executable with this prefix
+/// will be added to parsed output directly as an import string.
+/// (`-l../foo` adds `@import("../foo");`)
+pub const import_arg_prefix = "-l";
+
 var main_allocator = switch (@import("builtin").mode) {
     .Debug => std.heap.DebugAllocator(.{}).init,
     else => std.heap.ArenaAllocator.init(std.heap.page_allocator),
@@ -30,25 +35,38 @@ pub fn main() !void {
 
     var in_file_list: std.ArrayList([:0]const u8) = .empty;
     var out_file_path: ?[:0]const u8 = null;
+    var import_string: ?[:0]const u8 = null;
     defer in_file_list.deinit(allocator);
     var arg_iterator: std.process.ArgIterator = try .initWithAllocator(allocator);
     defer arg_iterator.deinit();
     // The first argument is the program invokation
-    assert(arg_iterator.next() != null);
+    const first = arg_iterator.next();
+    assert(first != null);
     while (arg_iterator.next()) |arg| {
-        const o = output_arg_prefix;
-        if (arg.len > o.len and mem.eql(u8, o, arg[0..o.len])) {
+        if (
+            arg.len > output_arg_prefix.len and
+            mem.eql(u8, output_arg_prefix, arg[0..output_arg_prefix.len])
+        ) {
             if (out_file_path == null) {
-                out_file_path = arg[o.len..];
+                out_file_path = arg[output_arg_prefix.len..];
             } else {
                 std.log.warn("ignoring additional output arg \'{s}\'", .{ arg });
+            }
+        } else if (
+            arg.len > import_arg_prefix.len and
+            mem.eql(u8, import_arg_prefix, arg[0..import_arg_prefix.len])
+        ) {
+            if (import_string == null) {
+                import_string = arg[import_arg_prefix.len..];
+            } else {
+                std.log.warn("ignoring additional import arg \'{s}\'", .{ arg });
             }
         } else {
             try in_file_list.append(allocator, arg);
         }
     }
 
-    // TODO fs -> Io.Dir ?
+    // TODO fs -> Io.Dir when std.Io.File has .writer()
     const cwd = std.fs.cwd();
 
     const out_file: std.fs.File =
@@ -144,6 +162,7 @@ pub fn main() !void {
 
     try writeProtocolSource(allocator, protocols_list.items, &writer.interface, .{
         .top_comment = top_comment,
+        .import = import_string,
     });
 
     // TODO unsure if when file writers/readers fail this would ever be null
