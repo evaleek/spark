@@ -119,9 +119,16 @@ pub fn main() !void {
 
 pub const Opcode = u32;
 pub const BackingEnum = u32;
+pub const ObjectID = u32;
 
 pub const SourceFormat = struct {
     indent: []const u8 = "    ",
+    generic_interface_type_name: []const u8 = "Interface",
+    import: ?[]const u8 = null,
+    fixed_symbol: []const u8 = "Fixed",
+    string_symbol: []const u8 = "String",
+    array_symbol: []const u8 = "Array",
+    fd_symbol: []const u8 = "FD",
 };
 
 /// Assumes multi-line strings in `protocols`
@@ -131,16 +138,53 @@ pub fn writeProtocolSource(
     protocols: []const Protocol,
     writer: *Io.Writer,
     format: SourceFormat,
-) (Allocator.Error || Io.Writer.Error)!void {
+) (error{ProtocolInvalid} || Allocator.Error || Io.Writer.Error)!void {
     for (protocols) |protocol| {
-        assert(isValidName(protocol.name));
+        if (!isValidName(protocol.name)) return error.ProtocolInvalid;
         for (protocol.interfaces) |interface| {
-            assert(isValidName(interface.name));
+            if (!isValidName(interface.name)) return error.ProtocolInvalid;
             if (interface.description_short) |description| {
-                for (description) |c| assert(c != '\n');
+                for (description) |c| {
+                    if (c == '\n') return error.ProtocolInvalid;
+                }
             }
         }
+        // TODO remaining strings accessed below
     }
+
+    const has_generic_objects = scan: for (protocols) |protocol| {
+        for (protocol.interfaces) |interface| {
+            for (interface.objects) |object| {
+                switch (object) {
+                    inline .request, .event => |obj| {
+                        for (obj.args) |arg| {
+                            if (arg.@"type" == .object and arg.interface == null) {
+                                break :scan true;
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+    } else false;
+    if (has_generic_objects) try writer.print(
+        \\/// A type-erased (not specified directly in the request/event arg) interface
+        \\pub const {s} = struct {{
+        \\    id: {s},
+        \\
+        \\    pub const New = struct {{
+        \\        id: {s},
+        \\    }};
+        \\}};
+        \\
+        \\
+        , .{
+            format.generic_interface_type_name,
+            @typeName(ObjectID),
+            @typeName(ObjectID),
+        },
+    );
 
     for (protocols, 0..) |protocol, protocol_index| {
         if (protocol.copyright) |copyright| {
@@ -151,6 +195,24 @@ pub fn writeProtocolSource(
                 try writer.writeByte('\n');
             }
         }
+
+        const interface_prefix: ?[]const u8 = find_prefix: {
+            if (protocol.interfaces.len <= 1) break :find_prefix null;
+            var idx: usize = 0;
+            while (true) : (idx += 1) {
+                if (idx >= protocol.interfaces[0].name.len)
+                    break :find_prefix if (idx!=0) protocol.interfaces[0].name[0..idx] else null;
+                const c = protocol.interfaces[0].name[idx];
+                for (protocol.interfaces[1..]) |interface| {
+                    if (idx < interface.name.len) {
+                        if (interface.name[idx] != c)
+                            break :find_prefix if (idx!=0) interface.name[0..idx] else null;
+                    } else {
+                        break :find_prefix if (idx!=0) interface.name[0..idx] else null;
+                    }
+                }
+            }
+        };
 
         try writer.writeAll("pub const ");
         try writer.writeAll(protocol.name);
@@ -167,8 +229,25 @@ pub fn writeProtocolSource(
 
             try writer.writeAll(format.indent);
             try writer.writeAll("pub const ");
-            try writer.writeAll(interface.name);
+            {
+                const name = try upperName(
+                    allocator,
+                    if (interface_prefix) |prefix| interface.name[prefix.len..] else interface.name,
+                );
+                defer allocator.free(name);
+                try writer.writeAll(name);
+            }
             try writer.writeAll(" = struct {\n");
+
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("id: " ++ @typeName(ObjectID) ++ ",\n\n");
+
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("pub const New = struct {\n");
+            try writer.splatBytesAll(format.indent, 3);
+            try writer.writeAll("id: " ++ @typeName(ObjectID) ++ ",\n");
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("};\n\n");
 
             try writer.splatBytesAll(format.indent, 2);
             try writer.print("pub const version = {d};\n\n", .{ interface.version });
@@ -269,14 +348,14 @@ pub fn writeProtocolSource(
 
             for (interface.objects, 0..) |object, object_index| {
                 switch (object) {
-                    .request => |request| {
-                        const upper_name = try upperName(allocator, request.name);
+                    inline .request, .event => |obj| {
+                        const upper_name = try upperName(allocator, obj.name);
                         defer allocator.free(upper_name);
 
                         try writeTagDescriptionSource(
                             writer,
-                            request.description_short,
-                            request.description_long,
+                            obj.description_short,
+                            obj.description_long,
                             format.indent,
                             2,
                         );
@@ -287,46 +366,69 @@ pub fn writeProtocolSource(
 
                         try writer.splatBytesAll(format.indent, 3);
                         try writer.writeAll("pub const since: ?comptime_int = ");
-                        if (request.since) |since| {
+                        if (obj.since) |since| {
                             try writer.print("{d}", .{ since });
                         } else {
                             try writer.writeAll("null");
                         }
                         try writer.writeAll(";\n\n");
 
-                        {} // TODO request body
+                        for (obj.args) |arg| {
+                            if (arg.summary) |summary| {
+                                try writer.splatBytesAll(format.indent, 3);
+                                try writer.writeAll("/// ");
+                                try writer.writeAll(summary);
+                                try writer.writeByte('\n');
+                            }
 
-                        try writer.splatBytesAll(format.indent, 2);
-                        try writer.writeAll("};\n");
-                    },
+                            try writer.splatBytesAll(format.indent, 3);
+                            try writer.writeAll(arg.name);
+                            try writer.writeAll(": ");
+                            if (arg.allow_null orelse false) {
+                                switch (arg.@"type") {
+                                    .object, .string => {},
+                                    else => return error.ProtocolInvalid,
+                                }
+                                try writer.writeByte('?');
+                            }
+                            switch (arg.@"type") {
+                                .int => try writer.writeAll(@typeName(i32)),
+                                .uint => try writer.writeAll(@typeName(u32)),
+                                .fixed => try writer.writeAll("Fixed"),
+                                .string => try writer.writeAll("String"),
+                                .array => try writer.writeAll("Array"),
+                                .fd => try writer.writeAll("FD"),
+                                .object, .new_id => |t| {
+                                    if (arg.interface) |interface_name| {
+                                        const parent_protocol_name = find_parent: {
+                                            for (protocols) |p| {
+                                                for (protocol.interfaces) |i| {
+                                                    if (mem.eql(u8, interface_name, i.name))
+                                                        break :find_parent p.name;
+                                                }
+                                            }
+                                            break :find_parent null;
+                                        } orelse return error.ProtocolInvalid;
 
-                    .event => |event| {
-                        const upper_name = try upperName(allocator, event.name);
-                        defer allocator.free(upper_name);
+                                        const inner_upper_name = try upperName(
+                                            allocator,
+                                            if (interface_prefix) |prefix| interface_name[prefix.len..] else interface_name,
+                                        );
+                                        defer allocator.free(inner_upper_name);
 
-                        try writeTagDescriptionSource(
-                            writer,
-                            event.description_short,
-                            event.description_long,
-                            format.indent,
-                            2,
-                        );
-
-                        try writer.splatBytesAll(format.indent, 2);
-                        try writer.writeAll("pub const ");
-                        try writer.writeAll(upper_name);
-                        try writer.writeAll(" = struct {\n");
-
-                        try writer.splatBytesAll(format.indent, 3);
-                        try writer.writeAll("pub const since: ?comptime_int = ");
-                        if (event.since) |since| {
-                            try writer.print("{d}", .{ since });
-                        } else {
-                            try writer.writeAll("null");
+                                        try writer.writeAll(parent_protocol_name);
+                                        try writer.writeByte('.');
+                                        try writer.writeAll(inner_upper_name);
+                                    } else {
+                                        try writer.writeAll(format.generic_interface_type_name);
+                                    }
+                                    if (t == .new_id) {
+                                        try writer.writeAll(".New");
+                                    }
+                                },
+                            }
+                            try writer.writeAll(",\n");
                         }
-                        try writer.writeAll("};\n\n");
-
-                        {} // TODO event body
 
                         try writer.splatBytesAll(format.indent, 2);
                         try writer.writeAll("};\n");
@@ -344,12 +446,10 @@ pub fn writeProtocolSource(
                             2,
                         );
 
-                        const bitfield = @"enum".bitfield orelse false;
-
                         try writer.splatBytesAll(format.indent, 2);
                         try writer.writeAll("pub const ");
                         try writer.writeAll(upper_name);
-                        if (!bitfield) {
+                        if (!@"enum".bitfield) {
                             try writer.writeAll(" = enum (" ++ @typeName(BackingEnum) ++ ") {\n");
                         } else {
                             try writer.writeAll(" = packed struct (" ++ @typeName(BackingEnum) ++ ") {\n");
@@ -364,7 +464,7 @@ pub fn writeProtocolSource(
                         }
                         try writer.writeAll("};\n\n");
 
-                        if (!bitfield) {
+                        if (!@"enum".bitfield) {
                             for (@"enum".entries) |entry| {
                                 if (entry.summary) |summary| {
                                     try writer.splatBytesAll(format.indent, 3);
@@ -379,33 +479,38 @@ pub fn writeProtocolSource(
                                 try writer.writeAll(",\n");
                             }
                         } else {
-                            // TODO
-                            // validation in parsing that allows these catch unreachables
-                            // include assertions in doc comment
-
                             const entries_sorted = try allocator.dupe(Entry, @"enum".entries);
                             defer allocator.free(entries_sorted);
-                            std.mem.sort(Entry, entries_sorted, {}, struct {
-                                fn lessThan(_: void, lhs: Entry, rhs: Entry) bool {
-                                    const lhs_int = fmt.parseInt(BackingEnum, lhs.value, 0) catch unreachable;
-                                    const rhs_int = fmt.parseInt(BackingEnum, rhs.value, 0) catch unreachable;
+                            // TODO hacky
+                            var saw_err: bool = false;
+                            std.mem.sort(Entry, entries_sorted, &saw_err, struct {
+                                fn lessThan(err: *bool, lhs: Entry, rhs: Entry) bool {
+                                    const lhs_int = fmt.parseInt(BackingEnum, lhs.value, 0) catch err: {
+                                        err.* = true;
+                                        break :err @as(BackingEnum, 0);
+                                    };
+                                    const rhs_int = fmt.parseInt(BackingEnum, rhs.value, 0) catch err: {
+                                        err.* = true;
+                                        break :err @as(BackingEnum, 0);
+                                    };
                                     return lhs_int < rhs_int;
                                 }
                             }.lessThan);
+                            if (saw_err) return error.ProtocolInvalid;
                             defer allocator.free(entries_sorted);
 
                             var padding_idx: usize = 0;
                             for (entries_sorted, 0..) |entry, entry_index| {
                                 const value = fmt.parseInt(BackingEnum, entry.value, 0)
-                                    catch unreachable;
-                                assert(std.math.isPowerOfTwo(value));
+                                    catch return error.ProtocolInvalid;
+                                if (!std.math.isPowerOfTwo(value)) return error.ProtocolInvalid;
                                 const last_value: BackingEnum =
                                     if (entry_index == 0) 0
                                     else fmt.parseInt(
                                         BackingEnum,
                                         entries_sorted[entry_index-1].value,
                                         0,
-                                    ) catch unreachable;
+                                    ) catch return error.ProtocolInvalid;
 
                                 const pre_padding_bits: u16 = @ctz(value) - (@ctz(last_value)+1);
 
@@ -419,12 +524,23 @@ pub fn writeProtocolSource(
                                     try writer.splatBytesAll(format.indent, 3);
                                     try writer.writeAll("/// ");
                                     try writer.writeAll(summary);
-                                    try writer.writeBytes('\n');
+                                    try writer.writeByte('\n');
                                 }
 
                                 try writer.splatBytesAll(format.indent, 3);
                                 try writer.writeAll(entry.name);
                                 try writer.writeAll(": bool = false,\n");
+                            }
+
+                            const post_padding_bits: u16 = @bitSizeOf(BackingEnum)
+                                - (@ctz(fmt.parseInt(
+                                        BackingEnum,
+                                        entries_sorted[entries_sorted.len-1].value,
+                                        0,
+                                    ) catch return error.ProtocolInvalid)+1);
+                            if (post_padding_bits != 0) {
+                                try writer.splatBytesAll(format.indent, 3);
+                                try writer.print("_{d}: u{d} = 0,\n", .{ padding_idx, post_padding_bits });
                             }
                         }
 
@@ -442,6 +558,25 @@ pub fn writeProtocolSource(
 
         try writer.writeAll("};");
         if (protocol_index != protocols.len-1) try writer.splatByteAll('\n', 2);
+    }
+
+    if (format.import) |import| {
+        try writer.splatByteAll('\n', 2);
+        try writer.writeAll("const Fixed = import.");
+        try writer.writeAll(format.fixed_symbol);
+        try writer.writeAll(";\n");
+        try writer.writeAll("const String = import.");
+        try writer.writeAll(format.string_symbol);
+        try writer.writeAll(";\n");
+        try writer.writeAll("const Array = import.");
+        try writer.writeAll(format.array_symbol);
+        try writer.writeAll(";\n");
+        try writer.writeAll("const FD = import.");
+        try writer.writeAll(format.fd_symbol);
+        try writer.writeAll(";\n");
+        try writer.writeAll("const import = @import(\"");
+        try writer.writeAll(import);
+        try writer.writeAll("\");");
     }
 }
 
