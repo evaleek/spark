@@ -165,9 +165,8 @@ pub fn writeProtocolSource(
                 switch (object) {
                     inline .request, .event => |obj| {
                         for (obj.args) |arg| {
-                            if (arg.@"type" == .object and arg.interface == null) {
+                            if (arg.@"type" == .object and arg.interface == null)
                                 break :scan true;
-                            }
                         }
                     },
                     else => {},
@@ -192,6 +191,44 @@ pub fn writeProtocolSource(
             @typeName(ObjectID),
         },
     );
+
+    const has_wl_object = scan: for (protocols) |protocol| {
+        for (protocol.interfaces) |interface| {
+            for (interface.objects) |object| {
+                switch (object) {
+                    inline .request, .event => |obj| {
+                        for (obj.args) |arg| {
+                            if (arg.interface) |ifc| {
+                                if (mem.eql(u8, "wl_object", ifc))
+                                    break :scan true;
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+    } else false;
+    const has_wayland_protocol = scan: for (protocols) |protocol| {
+        if (mem.eql(u8, "wayland", protocol.name)) break :scan true;
+    } else false;
+    const wl_object_src = [_][]const u8{
+        "/// A special pseudo-interface representing any Wayland object.",
+        "pub const Object = struct {",
+        std.fmt.comptimePrint("    id: {s},", .{ @typeName(ObjectID) }),
+        "",
+        "    pub const New = struct {",
+        std.fmt.comptimePrint("        id: {s},", .{ @typeName(ObjectID) }),
+        "    };",
+        "};",
+    };
+    if (has_wl_object and !has_wayland_protocol) {
+        for (wl_object_src) |line| {
+            try writer.writeAll(line);
+            try writer.writeByte('\n');
+        }
+        try writer.writeByte('\n');
+    }
 
     for (protocols, 0..) |protocol, protocol_index| {
         if (protocol.copyright) |copyright| {
@@ -224,6 +261,15 @@ pub fn writeProtocolSource(
         try writer.writeAll("pub const ");
         try writer.writeAll(protocol.name);
         try writer.writeAll(" = struct {\n");
+
+        if (has_wl_object and has_wayland_protocol and mem.eql(u8, "wayland", protocol.name)) {
+            for (wl_object_src) |line| {
+                try writer.splatBytesAll(format.indent, 1);
+                try writer.writeAll(line);
+                try writer.writeByte('\n');
+            }
+            try writer.writeByte('\n');
+        }
 
         for (protocol.interfaces, 0..) |interface, interface_index| {
             try writeTagDescriptionSource(
@@ -259,99 +305,120 @@ pub fn writeProtocolSource(
             try writer.splatBytesAll(format.indent, 2);
             try writer.print("pub const version = {d};\n\n", .{ interface.version });
 
-            try writer.splatBytesAll(format.indent, 2);
-            try writer.writeAll("pub const RequestCode = enum (" ++ @typeName(Opcode) ++ ") {\n");
-            {
-                var idx: usize = 0;
+            const has_requests, const has_events = scan: {
+                var req: bool = false;
+                var evt: bool = false;
                 for (interface.objects) |object| {
                     switch (object) {
-                        .request => |request| {
-                            if (request.description_short) |description| {
+                        .request => req = true,
+                        .event => evt = true,
+                        else => {},
+                    }
+                }
+                break :scan .{ req, evt };
+            };
+
+            if (has_requests) {
+                try writer.splatBytesAll(format.indent, 2);
+                try writer.writeAll("pub const RequestID = enum (" ++ @typeName(Opcode) ++ ") {\n");
+                {
+                    var idx: usize = 0;
+                    for (interface.objects) |object| {
+                        switch (object) {
+                            .request => |request| {
+                                if (request.description_short) |description| {
+                                    try writer.splatBytesAll(format.indent, 3);
+                                    try writer.writeAll("/// ");
+                                    try writer.writeAll(description);
+                                    try writer.writeByte('\n');
+                                }
                                 try writer.splatBytesAll(format.indent, 3);
-                                try writer.writeAll("/// ");
-                                try writer.writeAll(description);
-                                try writer.writeByte('\n');
-                            }
-                            try writer.splatBytesAll(format.indent, 3);
-                            try writer.print("{s} = {d},\n", .{ request.name, idx });
-                            idx += 1;
-                        },
-                        else => {},
+                                try writer.print("{s} = {d},\n", .{ request.name, idx });
+                                idx += 1;
+                            },
+                            else => {},
+                        }
                     }
+                    try writer.splatBytesAll(format.indent, 3);
+                    try writer.writeAll("_,\n");
                 }
-                try writer.splatBytesAll(format.indent, 3);
-                try writer.writeAll("_,\n");
+                try writer.splatBytesAll(format.indent, 2);
+                try writer.writeAll("};\n\n");
             }
-            try writer.splatBytesAll(format.indent, 2);
-            try writer.writeAll("};\n\n");
 
-            try writer.splatBytesAll(format.indent, 2);
-            try writer.writeAll("pub const Request = union (RequestCode) {\n");
-            {
-                for (interface.objects) |object| {
-                    switch (object) {
-                        .request => |request| {
-                            const upper_name = try upperName(allocator, request.name);
-                            defer allocator.free(upper_name);
-                            try writer.splatBytesAll(format.indent, 3);
-                            try writer.writeAll(request.name);
-                            try writer.writeAll(": ");
-                            try writer.writeAll(upper_name);
-                            try writer.writeAll(",\n");
-                        },
-                        else => {},
-                    }
-                }
-            }
-            try writer.splatBytesAll(format.indent, 2);
-            try writer.writeAll("};\n\n");
-
-            try writer.splatBytesAll(format.indent, 2);
-            try writer.writeAll("pub const EventCode = enum (" ++ @typeName(Opcode) ++ ") {\n");
-            {
-                var idx: usize = 0;
-                for (interface.objects) |object| {
-                    switch (object) {
-                        .event => |event| {
-                            if (event.description_short) |description| {
+            if (has_events) {
+                try writer.splatBytesAll(format.indent, 2);
+                try writer.writeAll("pub const EventID = enum (" ++ @typeName(Opcode) ++ ") {\n");
+                {
+                    var idx: usize = 0;
+                    for (interface.objects) |object| {
+                        switch (object) {
+                            .event => |event| {
+                                if (event.description_short) |description| {
+                                    try writer.splatBytesAll(format.indent, 3);
+                                    try writer.writeAll("/// ");
+                                    try writer.writeAll(description);
+                                    try writer.writeByte('\n');
+                                }
                                 try writer.splatBytesAll(format.indent, 3);
-                                try writer.writeAll("/// ");
-                                try writer.writeAll(description);
-                                try writer.writeByte('\n');
-                            }
-                            try writer.splatBytesAll(format.indent, 3);
-                            try writer.print("{s} = {d},\n", .{ event.name, idx });
-                            idx += 1;
-                        },
-                        else => {},
+                                try writer.print("{s} = {d},\n", .{ event.name, idx });
+                                idx += 1;
+                            },
+                            else => {},
+                        }
                     }
+                    try writer.splatBytesAll(format.indent, 3);
+                    try writer.writeAll("_,\n");
                 }
-                try writer.splatBytesAll(format.indent, 3);
-                try writer.writeAll("_,\n");
+                try writer.splatBytesAll(format.indent, 2);
+                try writer.writeAll("};\n\n");
             }
-            try writer.splatBytesAll(format.indent, 2);
-            try writer.writeAll("};\n\n");
 
-            try writer.splatBytesAll(format.indent, 2);
-            try writer.writeAll("pub const Event = enum (EventCode) {\n");
-            {
-                for (interface.objects) |object| {
-                    switch (object) {
-                        .event => |event| {
-                            const upper_name = try upperName(allocator, event.name);
-                            defer allocator.free(upper_name);
-                            try writer.splatBytesAll(format.indent, 3);
-                            try writer.writeAll(event.name);
-                            try writer.writeAll(": ");
-                            try writer.writeAll(upper_name);
-                            try writer.writeAll(",\n");
-                        },
-                        else => {},
+            if (has_requests) {
+                try writer.splatBytesAll(format.indent, 2);
+                try writer.writeAll("pub const Request = union (RequestID) {\n");
+                {
+                    for (interface.objects) |object| {
+                        switch (object) {
+                            .request => |request| {
+                                const upper_name = try upperName(allocator, request.name);
+                                defer allocator.free(upper_name);
+                                try writer.splatBytesAll(format.indent, 3);
+                                try writer.writeAll(request.name);
+                                try writer.writeAll(": ");
+                                try writer.writeAll(upper_name);
+                                try writer.writeAll(",\n");
+                            },
+                            else => {},
+                        }
                     }
                 }
+                try writer.splatBytesAll(format.indent, 2);
+                try writer.writeAll("};\n\n");
             }
-            try writer.splatBytesAll(format.indent, 2);
-            try writer.writeAll("};\n\n");
+
+            if (has_events) {
+                try writer.splatBytesAll(format.indent, 2);
+                try writer.writeAll("pub const Event = enum (EventID) {\n");
+                {
+                    for (interface.objects) |object| {
+                        switch (object) {
+                            .event => |event| {
+                                const upper_name = try upperName(allocator, event.name);
+                                defer allocator.free(upper_name);
+                                try writer.splatBytesAll(format.indent, 3);
+                                try writer.writeAll(event.name);
+                                try writer.writeAll(": ");
+                                try writer.writeAll(upper_name);
+                                try writer.writeAll(",\n");
+                            },
+                            else => {},
+                        }
+                    }
+                }
+                try writer.splatBytesAll(format.indent, 2);
+                try writer.writeAll("};\n\n");
+            }
 
             for (interface.objects, 0..) |object, object_index| {
                 switch (object) {
@@ -371,14 +438,13 @@ pub fn writeProtocolSource(
                         try writer.writeAll(upper_name);
                         try writer.writeAll(" = struct {\n");
 
-                        try writer.splatBytesAll(format.indent, 3);
-                        try writer.writeAll("pub const since: ?comptime_int = ");
                         if (obj.since) |since| {
+                            try writer.splatBytesAll(format.indent, 3);
+                            try writer.writeAll("pub const since = ");
                             try writer.print("{d}", .{ since });
-                        } else {
-                            try writer.writeAll("null");
+                            try writer.writeAll(";\n");
+                            if (obj.args.len != 0) try writer.writeByte('\n');
                         }
-                        try writer.writeAll(";\n\n");
 
                         for (obj.args) |arg| {
                             if (arg.summary) |summary| {
@@ -407,9 +473,10 @@ pub fn writeProtocolSource(
                                 .fd => try writer.writeAll("FD"),
                                 .object, .new_id => |t| {
                                     if (arg.interface) |interface_name| {
-                                        const parent_protocol_name: ?[]const u8 =
-                                            if (mem.eql(u8, interface_name, "wl_object")) null
-                                            else try find_parent: {
+                                        if (mem.eql(u8, interface_name, "wl_object")) {
+                                            try writer.writeAll("Object");
+                                        } else {
+                                            const parent_protocol_name: []const u8 = try find_parent: {
                                                 for (protocols) |p| {
                                                     for (protocol.interfaces) |i| {
                                                         if (mem.eql(u8, interface_name, i.name))
@@ -417,20 +484,18 @@ pub fn writeProtocolSource(
                                                     }
                                                 }
                                                 break :find_parent error.ProtocolInvalid;
-                                        };
+                                            };
 
-                                        if (parent_protocol_name) |parent_name| {
                                             const inner_upper_name = try upperName(
                                                 allocator,
-                                                if (interface_prefix) |prefix| interface_name[prefix.len..] else interface_name,
+                                                if (interface_prefix) |prefix| interface_name[prefix.len..]
+                                                else interface_name,
                                             );
                                             defer allocator.free(inner_upper_name);
 
-                                            try writer.writeAll(parent_name);
+                                            try writer.writeAll(parent_protocol_name);
                                             try writer.writeByte('.');
                                             try writer.writeAll(inner_upper_name);
-                                        } else {
-                                            try writer.writeAll(format.generic_interface_type_name);
                                         }
                                     } else {
                                         try writer.writeAll(format.generic_interface_type_name);
@@ -468,14 +533,12 @@ pub fn writeProtocolSource(
                             try writer.writeAll(" = packed struct (" ++ @typeName(BackingEnum) ++ ") {\n");
                         }
 
-                        try writer.splatBytesAll(format.indent, 3);
-                        try writer.writeAll("pub const since: ?comptime_int = ");
                         if (@"enum".since) |since| {
+                            try writer.splatBytesAll(format.indent, 3);
+                            try writer.writeAll("pub const since: ?comptime_int = ");
                             try writer.print("{d}", .{ since });
-                        } else {
-                            try writer.writeAll("null");
+                            try writer.writeAll(";\n\n");
                         }
-                        try writer.writeAll(";\n\n");
 
                         if (!@"enum".bitfield) {
                             for (@"enum".entries) |entry| {
