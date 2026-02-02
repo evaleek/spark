@@ -11,6 +11,7 @@ var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 pub fn main() !void {
     const allocator = switch (@import("builtin").mode) {
         .Debug => debug_allocator.allocator(),
+        // TODO arena not SMP
         .ReleaseSafe, .ReleaseFast, .ReleaseSmall => std.heap.smp_allocator,
     };
     defer switch (@import("builtin").mode) {
@@ -61,15 +62,19 @@ pub fn main() !void {
 
     var scanner: Scanner = try .init(allocator);
     defer scanner.deinit(allocator);
+    var protocols_list: std.ArrayList(Protocol) = try .initCapacity(
+        allocator,
+        if (in_file_list.items.len == 0) 1 else in_file_list.items.len,
+    );
+    defer protocols_list.deinit(allocator);
 
     if (in_file_list.items.len == 0) {
         read_buffer = undefined;
         var reader = Io.File.stdin().reader(io, &read_buffer);
         scanner.newStream();
-        scanner.stream(&writer.interface, &reader.interface, allocator) catch |err| switch (err) {
+        const protocols = scanner.parse(allocator, &reader.interface) catch |err| switch (err) {
             error.OutOfMemory,
             error.UnsupportedEncoding => |e| return e,
-            error.WriteFailed => return writer.err orelse error.WriteFailedMissingError,
             error.ReadFailed => {
                 if (reader.err) |e| {
                     log.err("{t} while reading stdin", .{ e });
@@ -79,21 +84,21 @@ pub fn main() !void {
                 }
             },
             error.InvalidWaylandXML => {
-                scanner.logSourceInvalidErr(std.log.err, "stdin");
+                scanner.logSourceInvalidError(std.log.err, "stdin");
                 return error.ProtocolXMLParseFailure;
             },
             error.StreamIncomplete => return error.ProtocolXMLParseFailure,
         };
+        try protocols_list.appendSlice(allocator, protocols);
     } else for (in_file_list.items) |path| {
         read_buffer = undefined;
         const file = try cwd.openFile(path, .{ .mode = .read_only });
         defer file.close();
         var reader = file.reader(io, &read_buffer);
         scanner.newStream();
-        scanner.stream(&writer.interface, &reader.interface, allocator) catch |err| switch (err) {
+        const protocols = scanner.parse(allocator, &reader.interface) catch |err| switch (err) {
             error.OutOfMemory,
             error.UnsupportedEncoding, => |e| return e,
-            error.WriteFailed => return writer.err orelse error.WriteFailedMissingError,
             error.ReadFailed => {
                 if (reader.err) |e| {
                     log.err("{t} while reading {s}", .{ e, path });
@@ -103,14 +108,15 @@ pub fn main() !void {
                 }
             },
             error.InvalidWaylandXML => {
-                scanner.logSourceInvalidErr(std.log.err, path);
+                scanner.logSourceInvalidError(std.log.err, path);
                 return error.ProtocolXMLParseFailure;
             },
             error.StreamIncomplete => return error.ProtocolXMLParseFailure,
         };
-        // Don't try to continue with other files after one file failed,
-        // because we have probably now written incomplete and invalid source
+        try protocols_list.appendSlice(allocator, protocols);
     }
+
+    try writeProtocolSource(allocator, protocols_list.items, &writer.interface, .{});
 
     // TODO unsure if when file writers/readers fail this would ever be null
     // (also above)
