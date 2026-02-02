@@ -71,8 +71,32 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
-
     mod.addOptions("build_options", options);
+
+    // Parse Wayland XML
+    // TODO consider conditioning on a wayland build flag
+    const wayland_xml_src = [_]std.Build.LazyPath{
+        b.path("src/wayland/protocol/wayland.xml"),
+    };
+    const wayland_scanner_mod = b.createModule(.{
+        .root_source_file = b.path("src/wayland/Scanner.zig"),
+        // Build exe needs to target the native build system
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    const wayland_scanner_exe = b.addExecutable(.{
+        .name = "wayland_scanner",
+        .root_module = wayland_scanner_mod,
+    });
+    const run_wayland_scanner = b.addRunArtifact(wayland_scanner_exe);
+    for (wayland_xml_src) |path| run_wayland_scanner.addFileArg(path);
+    run_wayland_scanner.addPrefixedFileArg("-a", b.path("src/wayland/protocol_common.zig"));
+    mod.addAnonymousImport("wayland_protocol", .{
+        .root_source_file = run_wayland_scanner.addPrefixedOutputFileArg(
+            "-o",
+            "wayland_protocol.zig",
+        ),
+    });
 
     if (link_x11) {
         mod.linkSystemLibrary("X11", .{
