@@ -6,10 +6,10 @@
 /// Otherwise, it writes to stdout.
 pub const output_arg_prefix = "-o";
 
-/// An argument to this executable with this prefix
-/// will be added to parsed output directly as an import string.
-/// (`-l../foo` adds `@import("../foo");`)
-pub const import_arg_prefix = "-l";
+/// A file path argument to this executable with this prefix
+/// will have its contents appended to the output
+/// after the parsed protocols.
+pub const append_arg_prefix = "-a";
 
 var main_allocator = switch (@import("builtin").mode) {
     .Debug => std.heap.DebugAllocator(.{}).init,
@@ -35,7 +35,7 @@ pub fn main() !void {
 
     var in_file_list: std.ArrayList([:0]const u8) = .empty;
     var out_file_path: ?[:0]const u8 = null;
-    var import_string: ?[:0]const u8 = null;
+    var app_file_path: ?[:0]const u8 = null;
     defer in_file_list.deinit(allocator);
     var arg_iterator: std.process.ArgIterator = try .initWithAllocator(allocator);
     defer arg_iterator.deinit();
@@ -53,13 +53,13 @@ pub fn main() !void {
                 std.log.warn("ignoring additional output arg \'{s}\'", .{ arg });
             }
         } else if (
-            arg.len > import_arg_prefix.len and
-            mem.eql(u8, import_arg_prefix, arg[0..import_arg_prefix.len])
+            arg.len > append_arg_prefix.len and
+            mem.eql(u8, append_arg_prefix, arg[0..append_arg_prefix.len])
         ) {
-            if (import_string == null) {
-                import_string = arg[import_arg_prefix.len..];
+            if (app_file_path == null) {
+                app_file_path = arg[append_arg_prefix.len..];
             } else {
-                std.log.warn("ignoring additional import arg \'{s}\'", .{ arg });
+                std.log.warn("ignoring additional output arg \'{s}\'", .{ arg });
             }
         } else {
             try in_file_list.append(allocator, arg);
@@ -165,8 +165,23 @@ pub fn main() !void {
 
     try writeProtocolSource(allocator, protocols_list.items, &writer.interface, .{
         .top_comment = top_comment,
-        .import = import_string,
     });
+
+    if (app_file_path) |path| {
+        if (cwd.openFile(path, .{ .mode = .read_only })) |file| {
+            defer file.close();
+            read_buffer = undefined;
+            var reader = file.reader(io, &read_buffer);
+            if (append: {
+                writer.interface.splatByteAll('\n', 2) catch |err| break :append err;
+                _ = reader.interface.streamRemaining(&writer.interface) catch |err| break :append err;
+            }) |_| {} else |err| {
+                std.log.err("{t} while streaming Wayland scanner append file", .{ err });
+            }
+        } else |err| {
+            std.log.err("failed to open Wayland scanner append file: {t}", .{ err });
+        }
+    }
 
     // TODO unsure if when file writers/readers fail this would ever be null
     // (also above)
@@ -181,7 +196,6 @@ pub const SourceFormat = struct {
     indent: []const u8 = "    ",
     top_comment: ?[]const u8 = null,
     generic_interface_type_name: []const u8 = "Interface",
-    import: ?[]const u8 = null,
     fixed_symbol: []const u8 = "Fixed",
     string_symbol: []const u8 = "String",
     array_symbol: []const u8 = "Array",
@@ -619,25 +633,6 @@ pub fn writeProtocolSource(
 
         try writer.writeAll("};");
         if (protocol_index != protocols.len-1) try writer.splatByteAll('\n', 2);
-    }
-
-    if (format.import) |import| {
-        try writer.splatByteAll('\n', 2);
-        try writer.writeAll("const Fixed = import.");
-        try writer.writeAll(format.fixed_symbol);
-        try writer.writeAll(";\n");
-        try writer.writeAll("const String = import.");
-        try writer.writeAll(format.string_symbol);
-        try writer.writeAll(";\n");
-        try writer.writeAll("const Array = import.");
-        try writer.writeAll(format.array_symbol);
-        try writer.writeAll(";\n");
-        try writer.writeAll("const FD = import.");
-        try writer.writeAll(format.fd_symbol);
-        try writer.writeAll(";\n");
-        try writer.writeAll("const import = @import(\"");
-        try writer.writeAll(import);
-        try writer.writeAll("\");");
     }
 }
 
