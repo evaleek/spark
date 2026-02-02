@@ -6,23 +6,21 @@
 /// Otherwise, it writes to stdout.
 pub const output_arg_prefix = "-o";
 
-var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+var main_allocator = switch (@import("builtin").mode) {
+    .Debug => std.heap.DebugAllocator(.{}).init,
+    else => std.heap.ArenaAllocator.init(std.heap.page_allocator),
+};
 
 pub fn main() !void {
-    const allocator = switch (@import("builtin").mode) {
-        .Debug => debug_allocator.allocator(),
-        // TODO arena not SMP
-        .ReleaseSafe, .ReleaseFast, .ReleaseSmall => std.heap.smp_allocator,
-    };
+    const allocator = main_allocator.allocator();
     defer switch (@import("builtin").mode) {
-        .Debug => switch (debug_allocator.deinit()) {
+        .Debug => switch (main_allocator.deinit()) {
             .ok => {},
             .leak => log.warn("memory leaks(s) detected during Wayland XML parsing", .{}),
         },
-        else => {},
+        else => main_allocator.deinit(),
     };
 
-    // TODO async IO
     var threaded: Io.Threaded = .init_single_threaded;
     defer threaded.deinit();
     const io = threaded.io();
