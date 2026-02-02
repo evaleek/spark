@@ -259,7 +259,7 @@ pub fn writeProtocolSource(
         };
 
         try writer.writeAll("pub const ");
-        try writer.writeAll(protocol.name);
+        try writer.writeAll(stringIdentifyIfKeywordConflict(protocol.name));
         try writer.writeAll(" = struct {\n");
 
         if (has_wl_object and has_wayland_protocol and mem.eql(u8, "wayland", protocol.name)) {
@@ -333,7 +333,10 @@ pub fn writeProtocolSource(
                                     try writer.writeByte('\n');
                                 }
                                 try writer.splatBytesAll(format.indent, 3);
-                                try writer.print("{s} = {d},\n", .{ request.name, idx });
+                                try writer.print("{s} = {d},\n", .{
+                                    stringIdentifyIfKeywordConflict(request.name),
+                                    idx,
+                                });
                                 idx += 1;
                             },
                             else => {},
@@ -361,7 +364,10 @@ pub fn writeProtocolSource(
                                     try writer.writeByte('\n');
                                 }
                                 try writer.splatBytesAll(format.indent, 3);
-                                try writer.print("{s} = {d},\n", .{ event.name, idx });
+                                try writer.print("{s} = {d},\n", .{
+                                    stringIdentifyIfKeywordConflict(event.name),
+                                    idx,
+                                });
                                 idx += 1;
                             },
                             else => {},
@@ -455,7 +461,7 @@ pub fn writeProtocolSource(
                             }
 
                             try writer.splatBytesAll(format.indent, 3);
-                            try writer.writeAll(arg.name);
+                            try writer.writeAll(stringIdentifyIfKeywordConflict(arg.name));
                             try writer.writeAll(": ");
                             if (arg.allow_null orelse false) {
                                 switch (arg.@"type") {
@@ -549,7 +555,7 @@ pub fn writeProtocolSource(
                                     try writer.writeByte('\n');
                                 }
                                 try writer.splatBytesAll(format.indent, 3);
-                                try writer.writeAll(entry.name);
+                                try writer.writeAll(stringIdentifyIfKeywordConflict(entry.name));
                                 try writer.writeAll(" = ");
                                 try writer.writeAll(entry.value);
                                 try writer.writeAll(",\n");
@@ -604,7 +610,7 @@ pub fn writeProtocolSource(
                                 }
 
                                 try writer.splatBytesAll(format.indent, 3);
-                                try writer.writeAll(entry.name);
+                                try writer.writeAll(stringIdentifyIfKeywordConflict(entry.name));
                                 try writer.writeAll(": bool = false,\n");
                             }
 
@@ -3010,6 +3016,70 @@ pub fn trimLiteralText(allocator: Allocator, text: []const u8) ![]const u8 {
     }
 
     return result;
+}
+
+fn stringIdentifyIfKeywordConflict(identifier: []const u8) []const u8 {
+    // want this to be std.zig.tokenizer.Token.keywords
+    // but tokenizer is not a pub module
+    // TODO make dependent to upstream somehow
+    const keyword_map = comptime std.StaticStringMap(void).initComptime(.{
+        .{ "addrspace", {} },
+        .{ "align", {} },
+        .{ "allowzero", {} },
+        .{ "and", {} },
+        .{ "anyframe", {} },
+        .{ "anytype", {} },
+        .{ "asm", {} },
+        .{ "break", {} },
+        .{ "callconv", {} },
+        .{ "catch", {} },
+        .{ "comptime", {} },
+        .{ "const", {} },
+        .{ "continue", {} },
+        .{ "defer", {} },
+        .{ "else", {} },
+        .{ "enum", {} },
+        .{ "errdefer", {} },
+        .{ "error", {} },
+        .{ "export", {} },
+        .{ "extern", {} },
+        .{ "fn", {} },
+        .{ "for", {} },
+        .{ "if", {} },
+        .{ "inline", {} },
+        .{ "noalias", {} },
+        .{ "noinline", {} },
+        .{ "nosuspend", {} },
+        .{ "opaque", {} },
+        .{ "or", {} },
+        .{ "orelse", {} },
+        .{ "packed", {} },
+        .{ "pub", {} },
+        .{ "resume", {} },
+        .{ "return", {} },
+        .{ "linksection", {} },
+        .{ "struct", {} },
+        .{ "suspend", {} },
+        .{ "switch", {} },
+        .{ "test", {} },
+        .{ "threadlocal", {} },
+        .{ "try", {} },
+        .{ "union", {} },
+        .{ "unreachable", {} },
+        .{ "var", {} },
+        .{ "volatile", {} },
+        .{ "while", {} },
+    });
+    const keyword_decollisions: [keyword_map.keys().len][]const u8 = comptime decollide: {
+        var keys: [keyword_map.keys().len][]const u8 = undefined;
+        for (&keys, keyword_map.keys()) |*dst, src| dst.* = "@\"" ++ src ++ "\"";
+        break :decollide keys;
+    };
+
+    return
+        if (keyword_map.getIndex(identifier)) |idx| keyword_decollisions[idx]
+        else identifier
+    ;
 }
 
 fn upperName(allocator: Allocator, name: []const u8) Allocator.Error![]const u8 {
