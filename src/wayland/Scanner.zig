@@ -70,7 +70,7 @@ pub fn main() !void {
     const cwd = std.fs.cwd();
 
     const out_file: std.fs.File =
-        if (out_file_path) |path| cwd.openFile(path, .{ .mode = .write_only })
+        if (out_file_path) |path| cwd.createFile(path, .{})
             catch return error.OutputFileOpenFailure
         else .stdout();
     var writer = out_file.writer(&write_buffer);
@@ -142,8 +142,11 @@ pub fn main() !void {
         \\// - Each protocol is declared as a top-level struct of this module.
         \\// - snake_case names are converted to PascalCase where conventional for Zig.
         \\// - Interface names are de-prefixed if a common prefix is found
-        \\//   for all interfaces in a protocol ('wl_' is cut off of
-        \\//   all interface names in the `wayland` namespace).
+        \\//   for all interfaces in a protocol (for example, 'wl_' is cut off
+        \\//   of all interface names in the `wayland` namespace).
+        \\// - Enums with a name matching a request or event in the same interface
+        \\//   are nested within that request/event (for example, the "error" enum
+        \\//   in "wl_display" is parsed to `wayland.Display.Error.Code`)
         \\// - All enums are non-exhaustive for forward compatibility.
         \\// - Request and event structs are not the exact offset layout
         \\//   in which they appear over the socket, but are defined
@@ -313,7 +316,7 @@ pub fn writeProtocolSource(
         };
 
         try writer.writeAll("pub const ");
-        try writer.writeAll(stringIdentifyIfKeywordConflict(protocol.name));
+        try writeNameDecollided(allocator, writer, protocol.name);
         try writer.writeAll(" = struct {\n");
 
         if (has_wl_object and has_wayland_protocol and mem.eql(u8, "wayland", protocol.name)) {
@@ -336,14 +339,12 @@ pub fn writeProtocolSource(
 
             try writer.writeAll(format.indent);
             try writer.writeAll("pub const ");
-            {
-                const name = try upperName(
-                    allocator,
-                    if (interface_prefix) |prefix| interface.name[prefix.len..] else interface.name,
-                );
-                defer allocator.free(name);
-                try writer.writeAll(name);
-            }
+            const current_interface_name = try upperName(
+                allocator,
+                if (interface_prefix) |prefix| interface.name[prefix.len..] else interface.name,
+            );
+            defer allocator.free(current_interface_name);
+            try writer.writeAll(current_interface_name);
             try writer.writeAll(" = struct {\n");
 
             try writer.splatBytesAll(format.indent, 2);
@@ -387,10 +388,8 @@ pub fn writeProtocolSource(
                                     try writer.writeByte('\n');
                                 }
                                 try writer.splatBytesAll(format.indent, 3);
-                                try writer.print("{s} = {d},\n", .{
-                                    stringIdentifyIfKeywordConflict(request.name),
-                                    idx,
-                                });
+                                try writeNameDecollided(allocator, writer, request.name);
+                                try writer.print(" = {d},\n", .{ idx });
                                 idx += 1;
                             },
                             else => {},
@@ -408,8 +407,10 @@ pub fn writeProtocolSource(
                             const upper_name = try upperName(allocator, request.name);
                             defer allocator.free(upper_name);
                             try writer.splatBytesAll(format.indent, 4);
-                            try writer.writeAll(request.name);
+                            try writeNameDecollided(allocator, writer, request.name);
                             try writer.writeAll(": ");
+                            try writer.writeAll(current_interface_name);
+                            try writer.writeByte('.');
                             try writer.writeAll(upper_name);
                             try writer.writeAll(",\n");
                         },
@@ -437,10 +438,8 @@ pub fn writeProtocolSource(
                                     try writer.writeByte('\n');
                                 }
                                 try writer.splatBytesAll(format.indent, 3);
-                                try writer.print("{s} = {d},\n", .{
-                                    stringIdentifyIfKeywordConflict(event.name),
-                                    idx,
-                                });
+                                try writeNameDecollided(allocator, writer, event.name);
+                                try writer.print(" = {d},\n", .{ idx });
                                 idx += 1;
                             },
                             else => {},
@@ -451,15 +450,17 @@ pub fn writeProtocolSource(
                 }
 
                 try writer.splatBytesAll(format.indent, 3);
-                try writer.writeAll("pub const Message = enum(Event) {\n");
+                try writer.writeAll("pub const Message = union(Event) {\n");
                 for (interface.objects) |object| {
                     switch (object) {
                         .event => |event| {
                             const upper_name = try upperName(allocator, event.name);
                             defer allocator.free(upper_name);
                             try writer.splatBytesAll(format.indent, 4);
-                            try writer.writeAll(event.name);
+                            try writeNameDecollided(allocator, writer, event.name);
                             try writer.writeAll(": ");
+                            try writer.writeAll(current_interface_name);
+                            try writer.writeByte('.');
                             try writer.writeAll(upper_name);
                             try writer.writeAll(",\n");
                         },
@@ -478,6 +479,16 @@ pub fn writeProtocolSource(
                         const upper_name = try upperName(allocator, obj.name);
                         defer allocator.free(upper_name);
 
+                        const enum_hit: ?Enum = for (interface.objects) |obj_inner| {
+                            switch (obj_inner) {
+                                .@"enum" => |e| {
+                                    if (mem.eql(u8, obj.name, e.name))
+                                        break e;
+                                },
+                                else => {},
+                            }
+                        } else null;
+
                         try writeTagDescriptionSource(
                             writer,
                             null,
@@ -489,7 +500,7 @@ pub fn writeProtocolSource(
                         try writer.writeAll("pub const ");
                         try writer.writeAll(upper_name);
                         try writer.writeAll(" = struct {");
-                        if (obj.since != null or obj.args.len != 0)
+                        if (obj.since != null or obj.args.len != 0 or enum_hit != null)
                             try writer.writeByte('\n');
 
                         if (obj.since) |since| {
@@ -509,7 +520,7 @@ pub fn writeProtocolSource(
                             }
 
                             try writer.splatBytesAll(format.indent, 3);
-                            try writer.writeAll(stringIdentifyIfKeywordConflict(arg.name));
+                            try writeNameDecollided(allocator, writer, arg.name);
                             try writer.writeAll(": ");
                             if (arg.allow_null orelse false) {
                                 switch (arg.@"type") {
@@ -562,123 +573,40 @@ pub fn writeProtocolSource(
                             try writer.writeAll(",\n");
                         }
 
-                        if (obj.since != null or obj.args.len != 0)
+                        if (enum_hit) |e| {
+                            if (obj.since != null or obj.args.len != 0) {
+                                try writer.writeByte('\n');
+                            }
+                            try writeEnumSource(
+                                allocator,
+                                writer,
+                                "Code",
+                                e,
+                                format.indent,
+                                3,
+                            );
+                        }
+
+                        if (obj.since != null or obj.args.len != 0 or enum_hit != null)
                             try writer.splatBytesAll(format.indent, 2);
                         try writer.writeAll("};\n");
                     },
 
                     .@"enum" => |@"enum"| {
-                        const upper_name = try upperName(allocator, @"enum".name);
-                        defer allocator.free(upper_name);
-
-                        try writeTagDescriptionSource(
+                        if ( for (interface.objects) |obj_inner| { switch (obj_inner) {
+                            inline .request, .event => |o| {
+                                if (mem.eql(u8, @"enum".name, o.name))
+                                    break false;
+                            },
+                            else => {},
+                        }} else true) try writeEnumSource(
+                            allocator,
                             writer,
-                            @"enum".description_short,
-                            @"enum".description_long,
+                            null,
+                            @"enum",
                             format.indent,
                             2,
                         );
-
-                        try writer.splatBytesAll(format.indent, 2);
-                        try writer.writeAll("pub const ");
-                        try writer.writeAll(upper_name);
-                        if (!@"enum".bitfield) {
-                            try writer.writeAll(" = enum(" ++ @typeName(BackingEnum) ++ ") {\n");
-                        } else {
-                            try writer.writeAll(" = packed struct(" ++ @typeName(BackingEnum) ++ ") {\n");
-                        }
-
-                        if (@"enum".since) |since| {
-                            try writer.splatBytesAll(format.indent, 3);
-                            try writer.writeAll("pub const since = ");
-                            try writer.print("{d}", .{ since });
-                            try writer.writeAll(";\n\n");
-                        }
-
-                        if (!@"enum".bitfield) {
-                            for (@"enum".entries) |entry| {
-                                if (entry.summary) |summary| {
-                                    try writer.splatBytesAll(format.indent, 3);
-                                    try writer.writeAll("/// ");
-                                    try writer.writeAll(summary);
-                                    try writer.writeByte('\n');
-                                }
-                                try writer.splatBytesAll(format.indent, 3);
-                                try writer.writeAll(stringIdentifyIfKeywordConflict(entry.name));
-                                try writer.writeAll(" = ");
-                                try writer.writeAll(entry.value);
-                                try writer.writeAll(",\n");
-                            }
-                            try writer.splatBytesAll(format.indent, 3);
-                            try writer.writeAll("_,\n");
-                        } else {
-                            const entries_sorted = try allocator.dupe(Entry, @"enum".entries);
-                            defer allocator.free(entries_sorted);
-                            // TODO hacky
-                            var saw_err: bool = false;
-                            std.mem.sort(Entry, entries_sorted, &saw_err, struct {
-                                fn lessThan(err: *bool, lhs: Entry, rhs: Entry) bool {
-                                    const lhs_int = fmt.parseInt(BackingEnum, lhs.value, 0) catch err: {
-                                        err.* = true;
-                                        break :err @as(BackingEnum, 0);
-                                    };
-                                    const rhs_int = fmt.parseInt(BackingEnum, rhs.value, 0) catch err: {
-                                        err.* = true;
-                                        break :err @as(BackingEnum, 0);
-                                    };
-                                    return lhs_int < rhs_int;
-                                }
-                            }.lessThan);
-                            if (saw_err) return error.ProtocolInvalid;
-                            defer allocator.free(entries_sorted);
-
-                            var padding_idx: usize = 0;
-                            for (entries_sorted, 0..) |entry, entry_index| {
-                                const value = fmt.parseInt(BackingEnum, entry.value, 0)
-                                    catch return error.ProtocolInvalid;
-                                if (!std.math.isPowerOfTwo(value)) return error.ProtocolInvalid;
-                                const last_value: BackingEnum =
-                                    if (entry_index == 0) 0
-                                    else fmt.parseInt(
-                                        BackingEnum,
-                                        entries_sorted[entry_index-1].value,
-                                        0,
-                                    ) catch return error.ProtocolInvalid;
-
-                                const pre_padding_bits: u16 = @ctz(value) - (@ctz(last_value)+1);
-
-                                if (pre_padding_bits != 0) {
-                                    try writer.splatBytesAll(format.indent, 3);
-                                    try writer.print("_{d}: u{d} = 0,\n", .{ padding_idx, pre_padding_bits });
-                                    padding_idx += 1;
-                                }
-
-                                if (entry.summary) |summary| {
-                                    try writer.splatBytesAll(format.indent, 3);
-                                    try writer.writeAll("/// ");
-                                    try writer.writeAll(summary);
-                                    try writer.writeByte('\n');
-                                }
-
-                                try writer.splatBytesAll(format.indent, 3);
-                                try writer.writeAll(stringIdentifyIfKeywordConflict(entry.name));
-                                try writer.writeAll(": bool = false,\n");
-                            }
-
-                            const post_padding_bits: u16 = @bitSizeOf(BackingEnum)
-                                - (@ctz(fmt.parseInt(
-                                        BackingEnum,
-                                        entries_sorted[entries_sorted.len-1].value,
-                                        0,
-                                    ) catch return error.ProtocolInvalid)+1);
-                            if (post_padding_bits != 0) {
-                                try writer.splatBytesAll(format.indent, 3);
-                                try writer.print("_{d}: u{d} = 0,\n", .{ padding_idx, post_padding_bits });
-                            }
-                        }
-
-                        try writer.splatBytesAll(format.indent, 2);
-                        try writer.writeAll("};\n");
                     },
                 }
                 if (object_index != interface.objects.len-1) try writer.writeByte('\n');
@@ -711,6 +639,130 @@ pub fn writeProtocolSource(
         try writer.writeAll(import);
         try writer.writeAll("\");");
     }
+}
+
+pub fn writeEnumSource(
+    allocator: Allocator,
+    writer: *Io.Writer,
+    name_override: ?[]const u8,
+    @"enum": Enum,
+    indent: []const u8,
+    indentation: usize,
+) (error{ProtocolInvalid} || Allocator.Error || Io.Writer.Error)!void {
+    const upper_name =
+        if (name_override) |n| n
+        else try upperName(allocator, @"enum".name)
+    ;
+    defer { if (name_override == null) allocator.free(upper_name); }
+
+    try writeTagDescriptionSource(
+        writer,
+        @"enum".description_short,
+        @"enum".description_long,
+        indent,
+        indentation,
+    );
+
+    try writer.splatBytesAll(indent, indentation);
+    try writer.writeAll("pub const ");
+    try writer.writeAll(upper_name);
+    if (!@"enum".bitfield) {
+        try writer.writeAll(" = enum(" ++ @typeName(BackingEnum) ++ ") {\n");
+    } else {
+        try writer.writeAll(" = packed struct(" ++ @typeName(BackingEnum) ++ ") {\n");
+    }
+
+    if (@"enum".since) |since| {
+        try writer.splatBytesAll(indent, indentation+1);
+        try writer.writeAll("pub const since = ");
+        try writer.print("{d}", .{ since });
+        try writer.writeAll(";\n\n");
+    }
+
+    if (!@"enum".bitfield) {
+        for (@"enum".entries) |entry| {
+            if (entry.summary) |summary| {
+                try writer.splatBytesAll(indent, indentation+1);
+                try writer.writeAll("/// ");
+                try writer.writeAll(summary);
+                try writer.writeByte('\n');
+            }
+            try writer.splatBytesAll(indent, indentation+1);
+            try writeNameDecollided(allocator, writer, entry.name);
+            try writer.writeAll(" = ");
+            try writer.writeAll(entry.value);
+            try writer.writeAll(",\n");
+        }
+        try writer.splatBytesAll(indent, indentation+1);
+        try writer.writeAll("_,\n");
+    } else {
+        const entries_sorted = try allocator.dupe(Entry, @"enum".entries);
+        defer allocator.free(entries_sorted);
+        // TODO hacky
+        var saw_err: bool = false;
+        std.mem.sort(Entry, entries_sorted, &saw_err, struct {
+            fn lessThan(err: *bool, lhs: Entry, rhs: Entry) bool {
+                const lhs_int = fmt.parseInt(BackingEnum, lhs.value, 0) catch err: {
+                    err.* = true;
+                    break :err @as(BackingEnum, 0);
+                };
+                const rhs_int = fmt.parseInt(BackingEnum, rhs.value, 0) catch err: {
+                    err.* = true;
+                    break :err @as(BackingEnum, 0);
+                };
+                return lhs_int < rhs_int;
+            }
+        }.lessThan);
+        if (saw_err) return error.ProtocolInvalid;
+        defer allocator.free(entries_sorted);
+
+        var padding_idx: usize = 0;
+        for (entries_sorted, 0..) |entry, entry_index| {
+            const value = fmt.parseInt(BackingEnum, entry.value, 0)
+                catch return error.ProtocolInvalid;
+            if (!std.math.isPowerOfTwo(value)) return error.ProtocolInvalid;
+            const last_value: BackingEnum =
+                if (entry_index == 0) 0
+                else fmt.parseInt(
+                    BackingEnum,
+                    entries_sorted[entry_index-1].value,
+                    0,
+                ) catch return error.ProtocolInvalid;
+
+            const pre_padding_bits: u16 = @ctz(value) - (@ctz(last_value)+1);
+
+            if (pre_padding_bits != 0) {
+                try writer.splatBytesAll(indent, indentation+1);
+                try writer.print("_{d}: u{d} = 0,\n", .{ padding_idx, pre_padding_bits });
+                padding_idx += 1;
+            }
+
+            if (entry.summary) |summary| {
+                try writer.splatBytesAll(indent, indentation+1);
+                try writer.writeAll("/// ");
+                try writer.writeAll(summary);
+                try writer.writeByte('\n');
+            }
+
+            try writer.splatBytesAll(indent, indentation+1);
+            try writeNameDecollided(allocator, writer, entry.name);
+            try writer.writeAll(": bool = false,\n");
+        }
+
+        const post_padding_bits: u16 = @bitSizeOf(BackingEnum)
+            - (@ctz(fmt.parseInt(
+                    BackingEnum,
+                    entries_sorted[entries_sorted.len-1].value,
+                    0,
+                ) catch return error.ProtocolInvalid)+1);
+        if (post_padding_bits != 0) {
+            try writer.splatBytesAll(indent, indentation+1);
+            try writer.print("_{d}: u{d} = 0,\n", .{ padding_idx, post_padding_bits });
+        }
+    }
+
+    try writer.splatBytesAll(indent, indentation);
+    try writer.writeAll("};\n");
 }
 
 pub fn writeTagDescriptionSource(
@@ -3067,6 +3119,22 @@ pub fn trimLiteralText(allocator: Allocator, text: []const u8) ![]const u8 {
     }
 
     return result;
+}
+
+fn writeNameDecollided(
+    allocator: Allocator,
+    writer: *Io.Writer,
+    identifier: []const u8,
+) (Allocator.Error || Io.Writer.Error)!void {
+    if (identifier.len > 0) {
+        if (isValidName(identifier)) {
+            try writer.writeAll(stringIdentifyIfKeywordConflict(identifier));
+        } else {
+            const name = try fmt.allocPrint(allocator, "@\"{s}\"", .{ identifier });
+            defer allocator.free(name);
+            try writer.writeAll(name);
+        }
+    }
 }
 
 fn stringIdentifyIfKeywordConflict(identifier: []const u8) []const u8 {
