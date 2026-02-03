@@ -2,24 +2,14 @@
 
 __Spark__ is a Zig windowing abstraction layer
 focused on providing a flexible, close-to-native-API interface
-while still hiding the boilerplate.
+while still managing the boilerplate.
 
 The library is still in early development.
-
-## Planned features
-
-On platforms where it is supported (X11, Win32, potentially Wayland with an extension)
-Spark exposes/will expose the window event queue for direct polling.
-On all platforms, an emulated event queue will be provided
-for a unified cross-platform interface.
-
-Partial implementation:
-
-- X11 (Linux/BSD)
-- Win32 (Windows)
 
 Planned implementation:
 
 - Wayland (Linux/BSD)
-- Cocoa (MacOS)
+- Win32 (Windows)
 - Consoles
+- Cocoa (MacOS)
+- X11 (Linux/BSD)
