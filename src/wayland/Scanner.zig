@@ -662,7 +662,8 @@ pub fn writeEnumSource(
     try writer.writeAll("pub const ");
     try writer.writeAll(upper_name);
     if (!@"enum".bitfield) {
-        try writer.writeAll(" = enum(" ++ @typeName(BackingEnum) ++ ") {\n");
+        const backing = enumBacking(@"enum".entries) catch return error.ProtocolInvalid;
+        try writer.print(" = enum({t}) {{\n", .{ backing });
     } else {
         try writer.writeAll(" = packed struct(" ++ @typeName(BackingEnum) ++ ") {\n");
     }
@@ -3194,6 +3195,23 @@ fn stringIdentifyIfKeywordConflict(identifier: []const u8) []const u8 {
         if (keyword_map.getIndex(identifier)) |idx| keyword_decollisions[idx]
         else identifier
     ;
+}
+
+fn enumBacking(entries: []const Entry) error{InvalidEnumValues}!enum { @"u32", @"i32" } {
+    var low: i64 = std.math.maxInt(i64);
+    var high: i64 = std.math.minInt(i64);
+    for (entries) |entry| {
+        const value = std.fmt.parseInt(i64, entry.value, 0)
+            catch return error.InvalidEnumValues;
+        if (value < low) low = value;
+        if (value > high) high = value;
+    }
+    if ( low >= std.math.minInt(u32) and high <= std.math.maxInt(u32) ) {
+        return .@"u32";
+    } else if ( low >= std.math.minInt(i32) and high <= std.math.maxInt(i32) ) {
+        return .@"i32";
+    }
+    return error.InvalidEnumValues;
 }
 
 fn upperName(allocator: Allocator, name: []const u8) Allocator.Error![]const u8 {
