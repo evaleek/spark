@@ -1,13 +1,15 @@
 //! This module provides a uniform cross-backend client windowing abstraction.
 
-pub const X11 = struct {
-    pub const Linked = @import("X11/Linked.zig");
-};
+//pub const X11 = struct {
+//    pub const Linked = @import("X11/Linked.zig");
+//};
+//
+//
+//pub const Win32 = struct {
+//    pub const Linked = @import("Win32/Linked.zig");
+//};
 
-
-pub const Win32 = struct {
-    pub const Linked = @import("Win32/Linked.zig");
-};
+pub const wayland = @import("wayland.zig");
 
 /// Length in screen coordinates
 pub const ScreenSize = u32;
@@ -153,110 +155,47 @@ pub const Event = union(Message) {
     };
 };
 
-/// Open a local UNIX domain socket
-/// using `std.posix` functions.
-pub fn openLocalSocket(absolute_path: []const u8) !posix.socket_t {
-    const path_max_len = @typeInfo(@FieldType(posix.system.sockaddr.un, "path")).array.len - 1;
-    if (absolute_path.len > path_max_len) return error.PathTooLong;
-
-    const socket = posix.socket(
-        posix.system.AF.UNIX,
-        posix.system.SOCK.STREAM | posix.system.SOCK.CLOEXEC,
-        0,
-    ) catch |err| switch (err) {
-        error.AccessDenied,
-        error.ProcessFdQuotaExceeded,
-        error.SystemFdQuotaExceeded,
-        error.SystemResources,
-        error.Unexpected => |e| return e,
-        error.AddressFamilyUnsupported => unreachable,
-        error.ProtocolFamilyNotAvailable => unreachable,
-        error.ProtocolNotSupported => unreachable,
-        error.SocketTypeNotSupported => unreachable,
-    };
-    errdefer posix.close(socket);
-
-    var addr = mem.zeroInit(posix.system.sockaddr.un, .{
-        .family = posix.system.AF.UNIX,
-    });
-    assert(absolute_path.len < addr.path.len);
-    @memcpy(addr.path[0..absolute_path.len], absolute_path);
-    assert(addr.path[absolute_path.len] == 0);
-
-    posix.connect(
-        socket,
-        @ptrCast(&addr),
-        @sizeOf(@TypeOf(addr)),
-    ) catch |err| switch (err) {
-        error.AccessDenied,
-        error.AddressUnavailable,
-        error.ConnectionPending,
-        error.ConnectionRefused,
-        error.ConnectionResetByPeer,
-        error.FileNotFound,
-        error.NotDir,
-        error.PermissionDenied,
-        error.ProcessFdQuotaExceeded,
-        error.SystemFdQuotaExceeded,
-        error.SystemResources,
-        error.Unexpected => |e| return e,
-        error.Canceled,
-        error.OptionUnsupported,
-        error.Timeout,
-        error.UnsupportedClock,
-        error.WouldBlock => |e| return e,
-        error.AddressFamilyUnsupported => unreachable,
-        error.ProtocolUnsupportedByAddressFamily => unreachable,
-        error.ProtocolUnsupportedBySystem => unreachable,
-        error.SocketModeUnsupported => unreachable,
-        // Impossible for UNIX domain socket paths
-        error.SymLinkLoop => unreachable,
-        // Assert we are connecting to a UNIX socket created
-        // by the host, not us the client
-        error.ReadOnlyFileSystem => unreachable,
-        // Network only
-        error.HostUnreachable => unreachable,
-        error.NetworkDown => unreachable,
-        error.NetworkUnreachable => unreachable,
-    };
-
-    return socket;
-}
+pub const Wire = @import("Wire.zig");
 
 pub const fallback_default_window_origin_x = 0;
 pub const fallback_default_window_origin_y = 0;
 pub const fallback_default_window_width = 800;
 pub const fallback_default_window_height = 600;
 
-test "reference all backends" {
-    inline for ([_][:0]const u8{
-        "X11",
-        "Win32",
-    }) |backend_name| {
-        const lowercase_name = comptime toLowercaseComptime(backend_name);
-        const Backend = @field(@This(), backend_name);
-        if (@hasDecl(Backend, "Linked") and
-            @field(build_options, lowercase_name ++ "_linked")) _ = Backend.Linked;
-        if (@hasDecl(Backend, "Loaded")) _ = Backend.Loaded;
-        if (@hasDecl(Backend, "Standalone")) _ = Backend.Standalone;
-    }
+// TODO delete this block
+test "reference new wayland" {
+    std.testing.refAllDeclsRecursive(@import("wayland.zig"));
 }
 
-test "x11-linked window creation" {
-    if (build_options.x11_linked and passesUnitTests(&.{ "X11", "Linked" })) {
-        try openCloseWindow(X11.Linked);
-    } else {
-        return error.SkipZigTest;
-    }
-}
-
-test "win32-linked window creation" {
-    if (build_options.win32_linked and passesUnitTests(&.{ "Win32", "Linked" })) {
-        try openCloseWindow(Win32.Linked);
-    } else {
-        return error.SkipZigTest;
-    }
-}
+//test "reference all backends" {
+//    inline for ([_][:0]const u8{
+//        "X11",
+//        "Win32",
+//    }) |backend_name| {
+//        const lowercase_name = comptime toLowercaseComptime(backend_name);
+//        const Backend = @field(@This(), backend_name);
+//        if (@hasDecl(Backend, "Linked") and
+//            @field(build_options, lowercase_name ++ "_linked")) _ = Backend.Linked;
+//        if (@hasDecl(Backend, "Loaded")) _ = Backend.Loaded;
+//        if (@hasDecl(Backend, "Standalone")) _ = Backend.Standalone;
+//    }
+//}
+//
+//test "x11-linked window creation" {
+//    if (build_options.x11_linked and passesUnitTests(&.{ "X11", "Linked" })) {
+//        try openCloseWindow(X11.Linked);
+//    } else {
+//        return error.SkipZigTest;
+//    }
+//}
+//
+//test "win32-linked window creation" {
+//    if (build_options.win32_linked and passesUnitTests(&.{ "Win32", "Linked" })) {
+//        try openCloseWindow(Win32.Linked);
+//    } else {
+//        return error.SkipZigTest;
+//    }
+//}
 
 fn openCloseWindow(comptime Client: type) !void {
     if (!@import("builtin").is_test)

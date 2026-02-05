@@ -149,6 +149,25 @@ pub fn build(b: *std.Build) !void {
     const window_test_step = b.step("test-window", "Launch a test window");
     window_test_step.dependOn(&run_mod_tests.step);
     window_test_step.dependOn(&run_window_test.step);
+
+    // TODO delete
+    const wayland_test_exe = b.addExecutable(.{
+        .name = b.fmt("{s}-wayland-test-{s}", .{
+            zon_name,
+            @tagName(target.result.os.tag),
+        }),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test_wayland.zig"),
+            .imports = &.{
+                .{ .name = zon_name, .module = mod },
+            },
+            .target = target,
+            .optimize = .Debug,
+        }),
+    });
+    const run_wayland_test = b.addRunArtifact(wayland_test_exe);
+    const wayland_test_step = b.step("test-wayland", "Launch the Wayland test");
+    wayland_test_step.dependOn(&run_wayland_test.step);
 }
 
 const LinkMode = std.builtin.LinkMode;

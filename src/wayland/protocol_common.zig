@@ -6,6 +6,7 @@ pub const Fixed = packed struct(i32) {
     decimal: u8,
     integer: i24,
 
+    /// See wayland-util.h
     pub fn toDouble(fixed: Fixed) f64 {
         return @as(f64, @bitCast(
             ((@as(i64, 1023) + @as(i64, 44)) << 52) +
@@ -14,16 +15,19 @@ pub const Fixed = packed struct(i32) {
         )) - @as(f64, @floatFromInt(@as(i64, 3) << 43));
     }
 
+    /// See wayland-util.h
     pub fn fromDouble(double: f64) Fixed {
         return @bitCast(@as(i32, @truncate(@as(i64, @bitCast(
             double + @as(f64, @floatFromInt(@as(i64, 3) << (51-8)))
         )))));
     }
 
+    /// See wayland-util.h
     pub fn toInt(fixed: Fixed) i32 {
         return @divTrunc(@as(i32, @bitCast(fixed)), 256);
     }
 
+    /// See wayland-util.h
     pub fn fromInt(int: i32) Fixed {
         return @bitCast(int * 256);
     }
