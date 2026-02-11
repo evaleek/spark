@@ -1,8 +1,4 @@
-pub const protocol = @import("wayland_protocol");
-pub const Fixed = protocol.Fixed;
-pub const String = protocol.String;
-pub const Array = protocol.Array;
-pub const FD = protocol.FD;
+pub const wire = @import("wayland/wire.zig");
 
 // TODO with 0.16
 ///// Get what should be an already established socket connection to the display.
