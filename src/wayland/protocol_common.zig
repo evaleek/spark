@@ -34,13 +34,22 @@ pub const Fixed = packed struct(i32) {
 };
 
 pub const String = struct {
-    /// Length including terminating null byte (string length plus one),
-    /// or 0 for `NULL`
+    /// Length including terminating null byte (string length plus one).
+    /// In the wire protocol, `0` indicates `NULL`,
+    /// in which case the arg is parsed as a `null` `?String`,
+    /// and it is asserted that a non-optional `String` view never has `len` `0`.
     len: u32,
     ptr: [*:0]const u8,
 
-    pub fn asSlice(str: String) ?[:0]const u8 {
-        return if (str.len != 0) str.ptr[0..str.len-1 :0] else null;
+    pub fn toSlice(str: String) [:0]const u8 {
+        return if (str.len > 0) str.ptr[0..str.len-1 :0] else unreachable;
+    }
+
+    pub fn fromSlice(slice: [:0]const u8) String {
+        return .{
+            .len = @as(u32, @intCast(slice.len)) + 1,
+            .ptr = slice.ptr,
+        };
     }
 };
 
@@ -52,4 +61,6 @@ pub const Array = struct {
 
 /// File descriptors are not sent directly within the corresponding message,
 /// but in the ancillary data of the UNIX domain socket message (`msg_control`).
-pub const FD = @import("std").posix.fd_t;
+pub const File = struct {
+    descriptor: @import("std").posix.fd_t,
+};

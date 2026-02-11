@@ -160,7 +160,7 @@ pub fn main() !void {
         \\//   - `object` => the attributed interface type
         \\//   - `new_id` => the attributed `.New` interface type
         \\//   - `array` => `Array`
-        \\//   - `fd` => `FD`
+        \\//   - `fd` => `File`
     ;
 
     try writeProtocolSource(allocator, protocols_list.items, &writer.interface, .{
@@ -188,8 +188,8 @@ pub fn main() !void {
     writer.interface.flush() catch return writer.err orelse error.WriteFailedMissingError;
 }
 
-pub const Opcode = u32;
-pub const BackingEnum = u32;
+pub const Opcode = u16;
+pub const BitfieldBacking = u32;
 pub const ObjectID = u32;
 
 pub const SourceFormat = struct {
@@ -199,7 +199,7 @@ pub const SourceFormat = struct {
     fixed_symbol: []const u8 = "Fixed",
     string_symbol: []const u8 = "String",
     array_symbol: []const u8 = "Array",
-    fd_symbol: []const u8 = "FD",
+    fd_symbol: []const u8 = "File",
 };
 
 /// Assumes multi-line strings in `protocols`
@@ -514,7 +514,7 @@ pub fn writeProtocolSource(
                         try writer.writeAll("pub const ");
                         try writer.writeAll(upper_name);
                         try writer.writeAll(" = struct {");
-                        if (obj.since != null or obj.args.len != 0 or enum_hit != null)
+                        if (obj.since != null or obj.deprecated_since != null or obj.args.len != 0 or enum_hit != null)
                             try writer.writeByte('\n');
 
                         if (obj.since) |since| {
@@ -522,7 +522,17 @@ pub fn writeProtocolSource(
                             try writer.writeAll("pub const since = ");
                             try writer.print("{d}", .{ since });
                             try writer.writeAll(";\n");
-                            if (obj.args.len != 0) try writer.writeByte('\n');
+                        }
+
+                        if (obj.deprecated_since) |deprecated_since| {
+                            try writer.splatBytesAll(format.indent, 3);
+                            try writer.writeAll("pub const deprecated_since = ");
+                            try writer.print("{d}", .{ deprecated_since });
+                            try writer.writeAll(";\n");
+                        }
+
+                        if ((obj.since != null or obj.deprecated_since != null) and obj.args.len != 0) {
+                            try writer.writeByte('\n');
                         }
 
                         for (obj.args) |arg| {
@@ -543,52 +553,90 @@ pub fn writeProtocolSource(
                                 }
                                 try writer.writeByte('?');
                             }
-                            switch (arg.@"type") {
-                                .int => try writer.writeAll(@typeName(i32)),
-                                .uint => try writer.writeAll(@typeName(u32)),
-                                .fixed => try writer.writeAll("Fixed"),
-                                .string => try writer.writeAll("String"),
-                                .array => try writer.writeAll("Array"),
-                                .fd => try writer.writeAll("FD"),
-                                .object, .new_id => |t| {
-                                    if (arg.interface) |interface_name| {
-                                        if (mem.eql(u8, interface_name, "wl_object")) {
-                                            try writer.writeAll("Object");
-                                        } else {
-                                            const parent_protocol_name: []const u8 = try find_parent: {
-                                                for (protocols) |p| {
-                                                    for (protocol.interfaces) |i| {
-                                                        if (mem.eql(u8, interface_name, i.name))
-                                                            break :find_parent p.name;
-                                                    }
+                            if (arg.@"enum") |full_enum_name| {
+                                if (arg.@"type" == .int or arg.@"type" == .uint) {
+                                    const pre, const post = std.mem.cutScalar(u8, full_enum_name, '.') orelse .{
+                                        interface.name,
+                                        full_enum_name,
+                                    };
+                                    const interface_name = try upperName(
+                                        allocator,
+                                        if (interface_prefix) |prefix| pre[prefix.len..] else pre,
+                                    );
+                                    defer allocator.free(interface_name);
+                                    try writer.writeAll(interface_name);
+                                    try writer.writeByte('.');
+                                    const enum_name = try upperName(allocator, post);
+                                    defer allocator.free(enum_name);
+                                    try writer.writeAll(enum_name);
+
+                                    // TODO does this work
+                                    const enum_was_hit = scan: for (protocol.interfaces) |interface_inner| {
+                                        if (mem.eql(u8, pre, interface_inner.name)) {
+                                            for (interface_inner.objects) |obj_inner| {
+                                                switch (obj_inner) {
+                                                    inline .request, .event => |o| {
+                                                        if (mem.eql(u8, post, o.name)) {
+                                                            break :scan true;
+                                                        }
+                                                    },
+                                                    .@"enum" => {},
                                                 }
-                                                break :find_parent error.ProtocolInvalid;
-                                            };
-
-                                            const inner_upper_name = try upperName(
-                                                allocator,
-                                                if (interface_prefix) |prefix| interface_name[prefix.len..]
-                                                else interface_name,
-                                            );
-                                            defer allocator.free(inner_upper_name);
-
-                                            try writer.writeAll(parent_protocol_name);
-                                            try writer.writeByte('.');
-                                            try writer.writeAll(inner_upper_name);
+                                            }
                                         }
-                                    } else {
-                                        try writer.writeAll(format.generic_interface_type_name);
-                                    }
-                                    if (t == .new_id) {
-                                        try writer.writeAll(".New");
-                                    }
-                                },
+                                    } else false;
+                                    if (enum_was_hit) try writer.writeAll(".Code");
+                                } else {
+                                    return error.ProtocolInvalid;
+                                }
+                            } else {
+                                switch (arg.@"type") {
+                                    .int => try writer.writeAll(@typeName(i32)),
+                                    .uint => try writer.writeAll(@typeName(u32)),
+                                    .fixed => try writer.writeAll("Fixed"),
+                                    .string => try writer.writeAll("String"),
+                                    .array => try writer.writeAll("Array"),
+                                    .fd => try writer.writeAll("File"),
+                                    .object, .new_id => |t| {
+                                        if (arg.interface) |interface_name| {
+                                            if (mem.eql(u8, interface_name, "wl_object")) {
+                                                try writer.writeAll("Object");
+                                            } else {
+                                                const parent_protocol_name: []const u8 = try find_parent: {
+                                                    for (protocols) |p| {
+                                                        for (protocol.interfaces) |i| {
+                                                            if (mem.eql(u8, interface_name, i.name))
+                                                                break :find_parent p.name;
+                                                        }
+                                                    }
+                                                    break :find_parent error.ProtocolInvalid;
+                                                };
+
+                                                const inner_upper_name = try upperName(
+                                                    allocator,
+                                                    if (interface_prefix) |prefix| interface_name[prefix.len..]
+                                                    else interface_name,
+                                                );
+                                                defer allocator.free(inner_upper_name);
+
+                                                try writer.writeAll(parent_protocol_name);
+                                                try writer.writeByte('.');
+                                                try writer.writeAll(inner_upper_name);
+                                            }
+                                        } else {
+                                            try writer.writeAll(format.generic_interface_type_name);
+                                        }
+                                        if (t == .new_id) {
+                                            try writer.writeAll(".New");
+                                        }
+                                    },
+                                }
                             }
                             try writer.writeAll(",\n");
                         }
 
                         if (enum_hit) |e| {
-                            if (obj.since != null or obj.args.len != 0) {
+                            if (obj.since != null or obj.deprecated_since != null or obj.args.len != 0) {
                                 try writer.writeByte('\n');
                             }
                             try writeEnumSource(
@@ -601,7 +649,7 @@ pub fn writeProtocolSource(
                             );
                         }
 
-                        if (obj.since != null or obj.args.len != 0 or enum_hit != null)
+                        if (obj.since != null or obj.deprecated_since != null or obj.args.len != 0 or enum_hit != null)
                             try writer.splatBytesAll(format.indent, 2);
                         try writer.writeAll("};\n");
                     },
@@ -663,9 +711,13 @@ pub fn writeEnumSource(
     try writer.writeAll(upper_name);
     if (!@"enum".bitfield) {
         const backing = enumBacking(@"enum".entries) catch return error.ProtocolInvalid;
+        // TODO enums can actually be referenced by uint/int args,
+        // so we might also scan for any args with an enum attribute matching this one
+        // to default/assert the same backing.
+        // for now the signedness of those args is ignored in place of what is decided here
         try writer.print(" = enum({t}) {{\n", .{ backing });
     } else {
-        try writer.writeAll(" = packed struct(" ++ @typeName(BackingEnum) ++ ") {\n");
+        try writer.writeAll(" = packed struct(" ++ @typeName(BitfieldBacking) ++ ") {\n");
     }
 
     if (@"enum".since) |since| {
@@ -692,40 +744,79 @@ pub fn writeEnumSource(
         try writer.splatBytesAll(indent, indentation+1);
         try writer.writeAll("_,\n");
     } else {
-        const entries_sorted = try allocator.dupe(Entry, @"enum".entries);
-        defer allocator.free(entries_sorted);
-        // TODO hacky
-        var saw_err: bool = false;
-        std.mem.sort(Entry, entries_sorted, &saw_err, struct {
-            fn lessThan(err: *bool, lhs: Entry, rhs: Entry) bool {
-                const lhs_int = fmt.parseInt(BackingEnum, lhs.value, 0) catch err: {
-                    err.* = true;
-                    break :err @as(BackingEnum, 0);
+        var valid_entries_list: std.ArrayList(Entry) = try .initCapacity(allocator, @"enum".entries.len);
+        defer valid_entries_list.deinit(allocator);
+        var invalid_entries_list: std.ArrayList(struct { Entry, std.ArrayList(Entry) }) = .empty;
+        defer {
+            for (invalid_entries_list.items) |*invalid_entry| {
+                invalid_entry[1].deinit(allocator);
+            }
+            invalid_entries_list.deinit(allocator);
+        }
+
+        // TODO check somewhere that all entries have unique value
+
+        for (@"enum".entries) |entry| {
+            const value = fmt.parseInt(BitfieldBacking, entry.value, 0)
+                catch return error.ProtocolInvalid;
+            if (value != 0 and std.math.isPowerOfTwo(value)) {
+                valid_entries_list.appendAssumeCapacity(entry);
+            } else {
+                try invalid_entries_list.append(allocator, .{
+                    entry,
+                    .empty,
+                });
+            }
+        }
+
+        // If an entry is not a power of two, it may be a "combination" field,
+        // for example top=1, left=4, top_left=5.
+        for (invalid_entries_list.items) |*item| {
+            const BitSet = comptime std.bit_set.IntegerBitSet(@bitSizeOf(BitfieldBacking));
+            const value = fmt.parseInt(BitfieldBacking, item[0].value, 0) catch unreachable;
+            const bit_set: BitSet = .{ .mask = @bitCast(value) };
+            var iter = bit_set.iterator(.{});
+            while (iter.next()) |bit_idx| {
+                const needle: BitfieldBacking = @as(BitfieldBacking, 1) << @intCast(bit_idx);
+                const entry_match = for (valid_entries_list.items) |entry| {
+                    const entry_value = fmt.parseInt(BitfieldBacking, entry.value, 0)
+                        catch unreachable;
+                    if (entry_value == needle) break entry;
+                } else return err: {
+                    std.debug.print("invalid {s} entry {s} value {s}", .{
+                        @"enum".name,
+                        item[0].name,
+                        item[0].value,
+                    });
+                    break :err error.ProtocolInvalid;
                 };
-                const rhs_int = fmt.parseInt(BackingEnum, rhs.value, 0) catch err: {
-                    err.* = true;
-                    break :err @as(BackingEnum, 0);
-                };
+                try item[1].append(allocator, entry_match);
+            }
+        }
+
+        std.mem.sort(Entry, valid_entries_list.items, {}, struct {
+            fn lessThan(_: void, lhs: Entry, rhs: Entry) bool {
+                const lhs_int = fmt.parseInt(BitfieldBacking, lhs.value, 0) catch unreachable;
+                const rhs_int = fmt.parseInt(BitfieldBacking, rhs.value, 0) catch unreachable;
                 return lhs_int < rhs_int;
             }
         }.lessThan);
-        if (saw_err) return error.ProtocolInvalid;
-        defer allocator.free(entries_sorted);
 
         var padding_idx: usize = 0;
-        for (entries_sorted, 0..) |entry, entry_index| {
-            const value = fmt.parseInt(BackingEnum, entry.value, 0)
-                catch return error.ProtocolInvalid;
-            if (!std.math.isPowerOfTwo(value)) return error.ProtocolInvalid;
-            const last_value: BackingEnum =
+        for (valid_entries_list.items, 0..) |entry, entry_index| {
+            const value = fmt.parseInt(BitfieldBacking, entry.value, 0)
+                catch unreachable;
+            assert(std.math.isPowerOfTwo(value));
+            const last_value: BitfieldBacking =
                 if (entry_index == 0) 0
                 else fmt.parseInt(
-                    BackingEnum,
-                    entries_sorted[entry_index-1].value,
+                    BitfieldBacking,
+                    valid_entries_list.items[entry_index-1].value,
                     0,
-                ) catch return error.ProtocolInvalid;
+                ) catch unreachable;
 
-            const pre_padding_bits: u16 = @ctz(value) - (@ctz(last_value)+1);
+            const pre_padding_bits: u16 =
+                @ctz(value) - ( if (last_value == 0) 0 else @ctz(last_value) + 1 );
 
             if (pre_padding_bits != 0) {
                 try writer.splatBytesAll(indent, indentation+1);
@@ -745,15 +836,44 @@ pub fn writeEnumSource(
             try writer.writeAll(": bool = false,\n");
         }
 
-        const post_padding_bits: u16 = @bitSizeOf(BackingEnum)
+        const post_padding_bits: u16 = @bitSizeOf(BitfieldBacking)
             - (@ctz(fmt.parseInt(
-                    BackingEnum,
-                    entries_sorted[entries_sorted.len-1].value,
+                    BitfieldBacking,
+                    valid_entries_list.items[valid_entries_list.items.len-1].value,
                     0,
                 ) catch return error.ProtocolInvalid)+1);
         if (post_padding_bits != 0) {
             try writer.splatBytesAll(indent, indentation+1);
             try writer.print("_{d}: u{d} = 0,\n", .{ padding_idx, post_padding_bits });
+        }
+
+        if (invalid_entries_list.items.len != 0) try writer.writeByte('\n');
+        for (invalid_entries_list.items, 0..) |item, idx| {
+            const entry, const matches_list = item;
+            if (entry.summary) |summary| {
+                try writer.splatBytesAll(indent, indentation+1);
+                try writer.writeAll("/// ");
+                try writer.writeAll(summary);
+                try writer.writeByte('\n');
+            }
+            try writer.splatBytesAll(indent, indentation+1);
+            try writer.writeAll("pub const ");
+            try writeNameDecollided(allocator, writer, entry.name);
+            try writer.writeAll(": ");
+            try writer.writeAll(upper_name);
+            try writer.writeAll(" = .{");
+            if (matches_list.items.len != 0) {
+                try writer.writeByte('\n');
+                for (matches_list.items) |entry_match| {
+                    try writer.splatBytesAll(indent, indentation+2);
+                    try writer.writeByte('.');
+                    try writer.writeAll(entry_match.name);
+                    try writer.writeAll(" = true,\n");
+                }
+                try writer.splatBytesAll(indent, indentation+1);
+            }
+            try writer.writeAll("};\n");
+            if (idx < invalid_entries_list.items.len - 1) try writer.writeByte('\n');
         }
     }
 
@@ -1528,6 +1648,8 @@ fn pushEmptyElement(
             var name: ?[]const u8 = null;
             var value: ?[]const u8 = null;
             var summary: ?[]const u8 = null;
+            var since: ?VersionNumber = null;
+            var deprecated_since: ?VersionNumber = null;
             errdefer {
                 if (name) |n| allocator.free(n);
                 if (value) |v| allocator.free(v);
@@ -1562,6 +1684,40 @@ fn pushEmptyElement(
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
+                } else if ( mem.eql(u8, "since", attr_name) ) {
+                    if (since == null) {
+                        if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
+                            since = number;
+                        } else |err| {
+                            if (err == error.Overflow) std.log.err(
+                                "\'since\' string \'{s}\' overflows the version number type"
+                                    ++ @typeName(VersionNumber),
+                                .{ attr_value },
+                            );
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "deprecated-since", attr_name) ) {
+                    if (deprecated_since == null) {
+                        if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
+                            deprecated_since = number;
+                        } else |err| {
+                            if (err == error.Overflow) std.log.err(
+                                "\'since\' string \'{s}\' overflows the version number type"
+                                    ++ @typeName(VersionNumber),
+                                .{ attr_value },
+                            );
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
                 } else {
                     scanner.source_invalid_err = .invalid_attributes;
                     return error.InvalidWaylandXML;
@@ -1588,6 +1744,8 @@ fn pushEmptyElement(
                     .name = name.?,
                     .value = value.?,
                     .summary = summary,
+                    .since = since,
+                    .deprecated_since = deprecated_since,
                 });
             }
         },
@@ -1598,10 +1756,12 @@ fn pushEmptyElement(
             var interface: ?[]const u8 = null;
             var allow_null: ?bool = null;
             var summary: ?[]const u8 = null;
+            var @"enum": ?[]const u8 = null;
             errdefer {
                 if (name) |n| allocator.free(n);
                 if (interface) |i| allocator.free(i);
                 if (summary) |s| allocator.free(s);
+                if (@"enum") |e| allocator.free(e);
             }
 
             for (0..attribute_count) |attribute_index| {
@@ -1658,6 +1818,13 @@ fn pushEmptyElement(
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
+                } else if ( mem.eql(u8, "enum", attr_name) ) {
+                    if (@"enum" == null) {
+                        @"enum" = try allocator.dupe(u8, attr_value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
                 } else {
                     scanner.source_invalid_err = .invalid_attributes;
                     return error.InvalidWaylandXML;
@@ -1688,6 +1855,7 @@ fn pushEmptyElement(
                         .interface = interface,
                         .allow_null = allow_null,
                         .summary = summary,
+                        .@"enum" = @"enum",
                     });
                 },
                 else => unreachable,
@@ -1851,6 +2019,7 @@ fn pushEmptyElement(
             @branchHint(.unlikely);
             var name: ?[]const u8 = null;
             var since: ?VersionNumber = null;
+            var deprecated_since: ?VersionNumber = null;
             var bitfield: ?bool = null;
             var request_type: ?Request.Type = null;
             errdefer {
@@ -1872,6 +2041,23 @@ fn pushEmptyElement(
                     if (since == null) {
                         if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
                             since = number;
+                        } else |err| {
+                            if (err == error.Overflow) std.log.err(
+                                "\'since\' string \'{s}\' overflows the version number type"
+                                    ++ @typeName(VersionNumber),
+                                .{ attr_value },
+                            );
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "deprecated-since", attr_name) ) {
+                    if (deprecated_since == null) {
+                        if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
+                            deprecated_since = number;
                         } else |err| {
                             if (err == error.Overflow) std.log.err(
                                 "\'since\' string \'{s}\' overflows the version number type"
@@ -1936,6 +2122,7 @@ fn pushEmptyElement(
                         .request => Request.Parsing{
                             .name = name,
                             .since = since,
+                            .deprecated_since = deprecated_since,
                             .@"type" = request_type,
                             .description_short = null,
                             .description_long = null,
@@ -1944,6 +2131,7 @@ fn pushEmptyElement(
                         .event => Event.Parsing{
                             .name = name,
                             .since = since,
+                            .deprecated_since = deprecated_since,
                             .description_short = null,
                             .description_long = null,
                             .args = .empty,
@@ -1951,6 +2139,7 @@ fn pushEmptyElement(
                         .@"enum" => Enum.Parsing{
                             .name = name,
                             .since = since,
+                            .deprecated_since = deprecated_since,
                             .description_short = null,
                             .description_long = null,
                             .bitfield = bitfield,
@@ -2158,6 +2347,7 @@ fn pushStartElement(
         .request, .event, .@"enum" => |interface_object_tag| {
             var name: ?[]const u8 = null;
             var since: ?VersionNumber = null;
+            var deprecated_since: ?VersionNumber = null;
             var bitfield: ?bool = null;
             var request_type: ?Request.Type = null;
             errdefer {
@@ -2179,6 +2369,23 @@ fn pushStartElement(
                     if (since == null) {
                         if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
                             since = number;
+                        } else |err| {
+                            if (err == error.Overflow) std.log.err(
+                                "\'since\' string \'{s}\' overflows the version number type"
+                                    ++ @typeName(VersionNumber),
+                                .{ attr_value },
+                            );
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "deprecated-since", attr_name) ) {
+                    if (deprecated_since == null) {
+                        if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
+                            deprecated_since = number;
                         } else |err| {
                             if (err == error.Overflow) std.log.err(
                                 "\'since\' string \'{s}\' overflows the version number type"
@@ -2247,6 +2454,7 @@ fn pushStartElement(
                     } = try .init(allocator);
                     parsing.name = name;
                     parsing.since = since;
+                    parsing.deprecated_since = deprecated_since;
                     if (comptime object_tag == .request) parsing.@"type" = request_type;
                     if (comptime object_tag == .@"enum") parsing.bitfield = bitfield;
                     try last_interface.objects.append(allocator, @unionInit(
@@ -2271,6 +2479,8 @@ fn pushStartElement(
             var name: ?[]const u8 = null;
             var value: ?[]const u8 = null;
             var summary: ?[]const u8 = null;
+            var since: ?VersionNumber = null;
+            var deprecated_since: ?VersionNumber = null;
             errdefer {
                 if (name) |n| allocator.free(n);
                 if (value) |v| allocator.free(v);
@@ -2305,6 +2515,40 @@ fn pushStartElement(
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
+                } else if ( mem.eql(u8, "since", attr_name) ) {
+                    if (since == null) {
+                        if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
+                            since = number;
+                        } else |err| {
+                            if (err == error.Overflow) std.log.err(
+                                "\'since\' string \'{s}\' overflows the version number type"
+                                    ++ @typeName(VersionNumber),
+                                .{ attr_value },
+                            );
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
+                } else if ( mem.eql(u8, "deprecated-since", attr_name) ) {
+                    if (deprecated_since == null) {
+                        if (fmt.parseUnsigned(VersionNumber, attr_value, 10)) |number| {
+                            deprecated_since = number;
+                        } else |err| {
+                            if (err == error.Overflow) std.log.err(
+                                "\'since\' string \'{s}\' overflows the version number type"
+                                    ++ @typeName(VersionNumber),
+                                .{ attr_value },
+                            );
+                            scanner.source_invalid_err = .invalid_attributes;
+                            return error.InvalidWaylandXML;
+                        }
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
                 } else {
                     scanner.source_invalid_err = .invalid_attributes;
                     return error.InvalidWaylandXML;
@@ -2331,6 +2575,8 @@ fn pushStartElement(
                     .name = name.?,
                     .value = value.?,
                     .summary = summary,
+                    .since = since,
+                    .deprecated_since = deprecated_since,
                 });
             }
         },
@@ -2342,10 +2588,12 @@ fn pushStartElement(
             var interface: ?[]const u8 = null;
             var allow_null: ?bool = null;
             var summary: ?[]const u8 = null;
+            var @"enum": ?[]const u8 = null;
             errdefer {
                 if (name) |n| allocator.free(n);
                 if (interface) |i| allocator.free(i);
                 if (summary) |s| allocator.free(s);
+                if (@"enum") |e| allocator.free(e);
             }
 
             for (0..attribute_count) |attribute_index| {
@@ -2402,6 +2650,13 @@ fn pushStartElement(
                         scanner.source_invalid_err = .invalid_attributes;
                         return error.InvalidWaylandXML;
                     }
+                } else if ( mem.eql(u8, "enum", attr_name) ) {
+                    if (@"enum" == null) {
+                        @"enum" = try allocator.dupe(u8, attr_value);
+                    } else {
+                        scanner.source_invalid_err = .invalid_attributes;
+                        return error.InvalidWaylandXML;
+                    }
                 } else {
                     scanner.source_invalid_err = .invalid_attributes;
                     return error.InvalidWaylandXML;
@@ -2432,6 +2687,7 @@ fn pushStartElement(
                         .interface = interface,
                         .allow_null = allow_null,
                         .summary = summary,
+                        .@"enum" = @"enum",
                     });
                 },
                 else => unreachable,
@@ -2782,6 +3038,7 @@ pub const Interface = struct {
 pub const Request = struct {
     name: []const u8,
     since: ?VersionNumber,
+    deprecated_since: ?VersionNumber,
     @"type": ?Type,
     description_short: ?[]const u8,
     description_long: ?[]const u8,
@@ -2798,6 +3055,7 @@ pub const Request = struct {
     const Parsing = struct {
         name: ?[]const u8,
         since: ?VersionNumber,
+        deprecated_since: ?VersionNumber,
         @"type": ?Type,
         description_short: ?[]const u8,
         description_long: ?[]const u8,
@@ -2807,6 +3065,7 @@ pub const Request = struct {
             return .{
                 .name = null,
                 .since = null,
+                .deprecated_since = null,
                 .@"type" = null,
                 .description_short = null,
                 .description_long = null,
@@ -2827,6 +3086,7 @@ pub const Request = struct {
             return .{
                 .name = parsing.name orelse return error.MissingAttribute,
                 .since = parsing.since,
+                .deprecated_since = parsing.deprecated_since,
                 .@"type" = parsing.@"type",
                 .description_short = parsing.description_short,
                 .description_long = parsing.description_long,
@@ -2854,6 +3114,7 @@ pub const Request = struct {
 pub const Event = struct {
     name: []const u8,
     since: ?VersionNumber,
+    deprecated_since: ?VersionNumber,
     description_short: ?[]const u8,
     description_long: ?[]const u8,
     args: []const Arg,
@@ -2869,6 +3130,7 @@ pub const Event = struct {
     const Parsing = struct {
         name: ?[]const u8,
         since: ?VersionNumber,
+        deprecated_since: ?VersionNumber,
         description_short: ?[]const u8,
         description_long: ?[]const u8,
         args: std.ArrayList(Arg),
@@ -2877,6 +3139,7 @@ pub const Event = struct {
             return .{
                 .name = null,
                 .since = null,
+                .deprecated_since = null,
                 .description_short = null,
                 .description_long = null,
                 .args = try .initCapacity(allocator, 16),
@@ -2896,6 +3159,7 @@ pub const Event = struct {
             return .{
                 .name = parsing.name orelse return error.MissingAttribute,
                 .since = parsing.since,
+                .deprecated_since = parsing.deprecated_since,
                 .description_short = parsing.description_short,
                 .description_long = parsing.description_long,
                 .args = try parsing.args.toOwnedSlice(allocator),
@@ -2907,6 +3171,7 @@ pub const Event = struct {
 pub const Enum = struct {
     name: []const u8,
     since: ?VersionNumber,
+    deprecated_since: ?VersionNumber,
     description_short: ?[]const u8,
     description_long: ?[]const u8,
     bitfield: bool,
@@ -2923,6 +3188,7 @@ pub const Enum = struct {
     const Parsing = struct {
         name: ?[]const u8,
         since: ?VersionNumber,
+        deprecated_since: ?VersionNumber,
         description_short: ?[]const u8,
         description_long: ?[]const u8,
         bitfield: ?bool,
@@ -2932,6 +3198,7 @@ pub const Enum = struct {
             return .{
                 .name = null,
                 .since = null,
+                .deprecated_since = null,
                 .description_short = null,
                 .description_long = null,
                 .bitfield = null,
@@ -2952,6 +3219,7 @@ pub const Enum = struct {
             return .{
                 .name = parsing.name orelse return error.MissingAttribute,
                 .since = parsing.since,
+                .deprecated_since = parsing.deprecated_since,
                 .description_short = parsing.description_short,
                 .description_long = parsing.description_long,
                 .bitfield = parsing.bitfield orelse false,
@@ -2967,8 +3235,10 @@ pub const Arg = struct {
     interface: ?[]const u8,
     allow_null: ?bool,
     summary: ?[]const u8,
+    @"enum": ?[]const u8,
 
     pub fn deinit(arg: Arg, allocator: Allocator) void {
+        if (arg.@"enum") |@"enum"| allocator.free(@"enum");
         if (arg.summary) |summary| allocator.free(summary);
         if (arg.interface) |interface| allocator.free(interface);
         allocator.free(arg.name);
@@ -2980,6 +3250,7 @@ pub const Arg = struct {
         interface: ?[]const u8,
         allow_null: ?bool,
         summary: ?[]const u8,
+        @"enum": ?[]const u8,
 
         pub const init: Parsing = .{
             .name = null,
@@ -2987,9 +3258,11 @@ pub const Arg = struct {
             .interface = null,
             .allow_null = null,
             .summary = null,
+            .@"enum" = null,
         };
 
         pub fn deinit(parsing: *Parsing, allocator: Allocator) void {
+            if (parsing.@"enum") |@"enum"| allocator.free(@"enum");
             if (parsing.summary) |summary| allocator.free(summary);
             if (parsing.interface) |interface| allocator.free(interface);
             if (parsing.name) |name| allocator.free(name);
@@ -3003,6 +3276,7 @@ pub const Arg = struct {
                 .interface = parsing.interface,
                 .allow_null = parsing.allow_null,
                 .summary = parsing.summary,
+                .@"enum" = parsing.@"enum",
             };
         }
     };
@@ -3034,6 +3308,10 @@ pub const Entry = struct {
     name: []const u8,
     value: []const u8,
     summary: ?[]const u8,
+    // TODO this appears rarely but is not incorporated in printed output
+    since: ?VersionNumber,
+    // TODO this appears rarely but is not incorporated in printed output
+    deprecated_since: ?VersionNumber,
 
     pub fn deinit(entry: Entry, allocator: Allocator) void {
         if (entry.summary) |summary| allocator.free(summary);
@@ -3045,11 +3323,15 @@ pub const Entry = struct {
         name: ?[]const u8,
         value: ?[]const u8,
         summary: ?[]const u8,
+        since: ?VersionNumber,
+        deprecated_since: ?VersionNumber,
 
         pub const init: Parsing = .{
             .name = null,
             .value = null,
             .summary = null,
+            .since = null,
+            .deprecated_since = null,
         };
 
         pub fn deinit(parsing: *Parsing, allocator: Allocator) void {
@@ -3064,6 +3346,8 @@ pub const Entry = struct {
                 .name = parsing.name orelse return error.MissingAttribute,
                 .value = parsing.value orelse return error.MissingAttribute,
                 .summary = parsing.summary,
+                .since = parsing.since,
+                .deprecated_since = parsing.deprecated_since,
             };
         }
     };
