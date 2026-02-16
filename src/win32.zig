@@ -1,7 +1,3 @@
-//! This module wraps procedures from the Win32 API to create and manage windows.
-
-pub const User32 = @import("win32/User32.zig");
-
 pub const Message = union {
 
     pub const Create = extern struct {
@@ -84,11 +80,11 @@ pub const Message = union {
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) void {
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Destroy {
             assert(uMsg == message);
             _ = wParam;
             _ = lParam;
-            return {};
+            return .{};
         }
     };
 
@@ -106,11 +102,11 @@ pub const Message = union {
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) void {
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) NonclientDestroy {
             assert(uMsg == message);
             _ = wParam;
             _ = lParam;
-            return {};
+            return .{};
         }
     };
 
@@ -136,10 +132,7 @@ pub const Message = union {
         pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Quit {
             assert(uMsg == message);
             _ = lParam;
-            const Mask = @Type(.{ .int = .{
-                .signedness = .unsigned,
-                .bits = @bitSizeOf(c_int),
-            }});
+            const Mask = @Int(.unsigned, @bitSizeOf(c_int));
             const masked: Mask = @truncate(wParam);
             const code: c_int = @bitCast(masked);
             return .{ .exit = code };
@@ -188,11 +181,11 @@ pub const Message = union {
         /// If an application processes this message, it should return this value.
         pub const processed: LRESULT = 0;
 
-        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) void {
+        pub fn fromParams(uMsg: UINT, wParam: WPARAM, lParam: LPARAM) Close {
             assert(uMsg == message);
             _ = wParam;
             _ = lParam;
-            return {};
+            return .{};
         }
     };
 
@@ -304,10 +297,7 @@ pub const Message = union {
         pub const Z = packed union {
             order: packed struct {
                 placement: WindowSpecialZ,
-                _padding: @Type(.{ .int = .{
-                    .signedness = .unsigned,
-                    .bits = @bitSizeOf(HWND) - @bitSizeOf(WindowSpecialZ),
-                }}) = 0,
+                _padding: @Int(.unsigned, @bitSizeOf(HWND) - @bitSizeOf(WindowSpecialZ)) = 0,
             },
             window: HWND,
 
@@ -2028,10 +2018,7 @@ pub const WindowClassStyle = packed struct(UINT) {
     /// Windows created from a class with this style must be top-level windows;
     /// they may not be child windows.
     drop_shadow: bool = false,
-    _padding: @Type(.{ .int = .{
-        .signedness = .unsigned,
-        .bits = @bitSizeOf(UINT) - 18,
-    }}) = 0,
+    _padding: @Int(.unsigned, @bitSizeOf(UINT) - 18) = 0,
 
     pub const DeviceContext = enum(u3) {
         /// No device context style is specified.
@@ -2151,10 +2138,10 @@ pub const WindowStyle = packed struct(u32) {
 
     /// An overlapped window with no additional styles
     /// (legacy name 'TILED').
-    pub const overlapped = WindowStyle{};
+    pub const overlapped: WindowStyle = .{};
 
     /// An overlapped window with default styles.
-    pub const overlapped_window = WindowStyle{
+    pub const overlapped_window: WindowStyle = .{
         .frame = .caption,
         .system_menu = true,
         .size_box = true,
@@ -2165,7 +2152,7 @@ pub const WindowStyle = packed struct(u32) {
     /// A pop-up window.
     /// The .frame` field must be set to `.caption`
     /// to make the window menu visible.
-    pub const pop_up_window = WindowStyle{
+    pub const pop_up_window: WindowStyle = .{
         .pop_up = true,
         .frame = .border,
         .system_menu = true,
@@ -2366,14 +2353,14 @@ pub const WindowStyleExtended = packed struct(u32) {
     _padding: u4 = 0,
 
     /// The window is an overlapped window.
-    pub const overlapped_window = WindowStyleExtended{
+    pub const overlapped_window: WindowStyleExtended = .{
         .window_edge = true,
         .client_edge = true,
     };
 
     /// The window is palette window,
     /// which is a modeless dialog box that presents an array of commands.
-    pub const palette_window = WindowStyleExtended{
+    pub const palette_window: WindowStyleExtended = .{
         .window_edge = true,
         .tool_window = true,
         .topmost = true,
@@ -2452,7 +2439,6 @@ pub const ShowStatus = enum (LPARAM) {
     _,
 };
 
-
 /// The `flags` field of `WINDOWPOS`.
 pub const SetWindowPosition = packed struct(UINT) {
     /// Retains the current size (ignores the `cx` and `cy` members).
@@ -2506,10 +2492,7 @@ pub const SetWindowPosition = packed struct(UINT) {
     /// This prevents the calling thread from blocking its execution
     /// while other threads process the request.
     async_window_position: bool = false,
-    _padding: @Type(.{ .int = .{
-        .signedness = .unsigned,
-        .bits = @bitSizeOf(UINT) - 15,
-    }}) = 0,
+    _padding: @Int(.unsigned, @bitSizeOf(UINT) - 15) = 0,
 };
 
 test SetWindowPosition {
@@ -2674,14 +2657,14 @@ pub const VirtualKey = enum(u8) {
     pause = VK.PAUSE,
     /// Caps lock key
     capital = VK.CAPITAL,
-    /// IME Kana/Hangul mode (same constant value)
+    /// IME Kana/Hangul mode (same constant)
     kana_hangul = VK.KANA,
     ime_on = VK.IME_ON,
     /// IME Junja mode
     junja = VK.JUNA,
     /// IME final mode
     final = VK.FINAL,
-    /// IME Hanja/Kanji mode (same constant value)
+    /// IME Hanja/Kanji mode (same constant)
     hanja_kanji = VK.HANJA,
     ime_off = VK.IME_OFF,
     escape = VK.ESCAPE,
@@ -3036,10 +3019,7 @@ pub fn Words(Param: type) type {
     return packed struct {
         low: WORD,
         high: WORD,
-        _padding: @Type(.{ .int = .{
-            .signedness = .unsigned,
-            .bits = @bitSizeOf(Param) - (2 * @bitSizeOf(WORD)),
-        }}) = 0,
+        _padding: @Int(.unsigned, @bitSizeOf(Param) - (2 * @bitSizeOf(WORD))) = 0,
     };
 }
 
@@ -3060,10 +3040,7 @@ pub const StringOrAtom = packed union {
     string: [*:0]const WCHAR,
     atom: packed struct {
         word: WORD,
-        _high: @Type(.{ .int = .{
-            .signedness = .unsigned,
-            .bits = @bitSizeOf(LPCWSTR) - @bitSizeOf(WORD),
-        }}) = 0,
+        _high: @Int(.unsigned, @bitSizeOf(LPCWSTR) - @bitSizeOf(WORD)) = 0,
     },
 
     pub fn which(string_or_atom: StringOrAtom) enum { string, atom } {
@@ -3192,18 +3169,12 @@ pub const PAINTSTRUCT = extern struct {
 };
 
 fn LOWORD(param: anytype) WORD {
-    const Size = @Type(.{ .int = .{
-        .signedness = @typeInfo(@TypeOf(param)).int.signedness,
-        .bits = @bitSizeOf(DWORD_PTR),
-    }});
+    const Size = @Int(@typeInfo(@TypeOf(param)).int.signedness, @bitSizeOf(DWORD_PTR));
     return @truncate(@as(DWORD_PTR, @bitCast(@as(Size, param))) & 0xFFFF);
 }
 
 fn HIWORD(param: anytype) WORD {
-    const Size = @Type(.{ .int = .{
-        .signedness = @typeInfo(@TypeOf(param)).int.signedness,
-        .bits = @bitSizeOf(DWORD_PTR),
-    }});
+    const Size = @Int(@typeInfo(@TypeOf(param)).int.signedness, @bitSizeOf(DWORD_PTR));
     return @truncate((@as(DWORD_PTR, @bitCast(@as(Size, param))) >> 16) & 0xFFFF);
 }
 
@@ -3808,41 +3779,38 @@ pub const HT = struct {
 };
 
 // TODO confirm .winapi == __stdcall
-pub const CALLBACK = std.builtin.CallingConvention.winapi;
+pub const CALLBACK: std.builtin.CallingConvention = .winapi;
 
 // Assumed in some field types of message parse structs
 comptime { assert(@bitSizeOf(WORD) == 16); }
 
-pub const FALSE = 0;
-pub const TRUE = 1;
-pub const BYTE = windows.BYTE;
-pub const ATOM = windows.ATOM;
-pub const UINT = windows.UINT;
-pub const LONG = windows.LONG;
-pub const WCHAR = windows.WCHAR;
-pub const WORD = windows.WORD;
-pub const DWORD = windows.DWORD;
-pub const DWORD_PTR = windows.DWORD_PTR;
-pub const ULONG_PTR = windows.ULONG_PTR;
-pub const WPARAM = windows.WPARAM;
-pub const LPARAM = windows.LPARAM;
-pub const LRESULT = windows.LRESULT;
-pub const HLOCAL = windows.HLOCAL;
-pub const HINSTANCE = windows.HINSTANCE;
-pub const HWND = windows.HWND;
-pub const HICON = windows.HICON;
-pub const HCURSOR = windows.HCURSOR;
-pub const HMENU = windows.HMENU;
-pub const LPVOID = windows.LPVOID;
-pub const LPCVOID = windows.LPCVOID;
-pub const LPWSTR = windows.LPWSTR;
-pub const LPCWSTR = windows.LPCWSTR;
-pub const POINT = windows.POINT;
-pub const RECT = windows.RECT;
+pub const FALSE = std.os.windows.FALSE;
+pub const TRUE = std.os.windows.TRUE;
+pub const BYTE = std.os.windows.BYTE;
+pub const ATOM = std.os.windows.ATOM;
+pub const UINT = std.os.windows.UINT;
+pub const LONG = std.os.windows.LONG;
+pub const WCHAR = std.os.windows.WCHAR;
+pub const WORD = std.os.windows.WORD;
+pub const DWORD = std.os.windows.DWORD;
+pub const DWORD_PTR = std.os.windows.DWORD_PTR;
+pub const ULONG_PTR = std.os.windows.ULONG_PTR;
+pub const WPARAM = std.os.windows.WPARAM;
+pub const LPARAM = std.os.windows.LPARAM;
+pub const LRESULT = std.os.windows.LRESULT;
+pub const HLOCAL = std.os.windows.HLOCAL;
+pub const HINSTANCE = std.os.windows.HINSTANCE;
+pub const HWND = std.os.windows.HWND;
+pub const HICON = std.os.windows.HICON;
+pub const HCURSOR = std.os.windows.HCURSOR;
+pub const HMENU = std.os.windows.HMENU;
+pub const LPVOID = std.os.windows.LPVOID;
+pub const LPCVOID = std.os.windows.LPCVOID;
+pub const LPWSTR = std.os.windows.LPWSTR;
+pub const LPCWSTR = std.os.windows.LPCWSTR;
+pub const POINT = std.os.windows.POINT;
+pub const RECT = std.os.windows.RECT;
 
 const assert = std.debug.assert;
-
 const testing = std.testing;
-
-const windows = std.os.windows;
 const std = @import("std");
