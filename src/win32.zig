@@ -1,3 +1,85 @@
+// TODO eliminate kernel32 usage
+
+pub extern "kernel32" fn LocalFree(hMem: HLOCAL) callconv(.winapi) ?HLOCAL;
+pub extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
+pub extern "kernel32" fn FormatMessageW(
+    dwFlags: DWORD,
+    lpSource: ?LPCVOID,
+    dwMessageId: DWORD,
+    dwLanguageId: DWORD,
+    lpBuffer: LPWSTR,
+    nSize: DWORD,
+    // [*c]va_list (always pass as null)
+    Arguments: ?*anyopaque,
+) callconv(.winapi) DWORD;
+
+pub extern "kernel32" fn GetStartupInfoW(lpStartupInfo: LPSTARTUPINFOW) callconv(.winapi) void;
+
+pub extern "user32" fn RegisterClassExW(lpWndClass: *const WNDCLASSEXW) callconv(.winapi) ATOM;
+pub extern "user32" fn UnregisterClassW(lpClassName: LPCWSTR, hInstance: ?HINSTANCE) callconv(.winapi) BOOL;
+
+pub extern "user32" fn LoadCursorW(hInstance: ?HINSTANCE, lpCursorName: LPCWSTR) callconv(.winapi) void;
+
+pub extern "user32" fn CreateWindowExW(
+    dwExStyle: DWORD,
+    lpClassName: ?LPCWSTR,
+    lpWindowName: ?LPCWSTR,
+    dwStyle: DWORD,
+    X: c_int,
+    Y: c_int,
+    nWidth: c_int,
+    nHeight: c_int,
+    hWndParent: ?HWND,
+    hMenu: ?HMENU,
+    hInstance: ?HINSTANCE,
+    lpParam: ?LPVOID,
+) callconv(.winapi) ?HWND;
+pub extern "user32" fn DestroyWindow(hWnd: HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn UpdateWindow(hWnd: HWND) callconv(.winapi) BOOL;
+
+pub extern "user32" fn SetWindowLongPtrW(
+    hWnd: HWND,
+    nIndex: c_int,
+    dwNewLong: LONG_PTR,
+) callconv(.winapi) LONG_PTR;
+pub extern "user32" fn GetWindowLongPtrW(
+    hWnd: HWND,
+    nIndex: c_int,
+) callconv(.winapi) LONG_PTR;
+
+pub extern "user32" fn PostMessageW(
+    hWnd: ?HWND,
+    Msg: UINT,
+    wParam: WPARAM,
+    lParam: LPARAM,
+) callconv(.winapi) BOOL;
+
+pub extern "user32" fn PeekMessageW(
+    lpMsg: LPMSG,
+    hWnd: ?HWND,
+    wMsgFilterMin: UINT,
+    wMsgFilterMax: UINT,
+    wRemoveMsg: UINT,
+) callconv(.winapi) BOOL;
+pub extern "user32" fn GetMessageW(
+    lpMsg: LPMSG,
+    hWnd: ?HWND,
+    wMsgFilterMin: UINT,
+    wMsgFilterMax: UINT,
+) callconv(.winapi) BOOL;
+pub extern "user32" fn TranslateMessage(lpMsg: *const MSG) callconv(.winapi) BOOL;
+pub extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.winapi) LRESULT;
+
+pub extern "user32" fn DefWindowProcW(
+    hWnd: HWND,
+    Msg: UINT,
+    wParam: WPARAM,
+    lParam: LPARAM,
+) callconv(.winapi) LRESULT;
+
+pub extern "user32" fn BeginPaint(hWnd: HWND, lpPaint: *PAINTSTRUCT) callconv(.winapi) ?HDC;
+pub extern "user32" fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) callconv(.winapi) BOOL;
+
 pub const Message = union {
 
     pub const Create = extern struct {
@@ -96,7 +178,7 @@ pub const Message = union {
     /// This message is sent after the child windows have been destroyed.
     /// In contrast, `Destroy` is sent before the child windows are destroyed.
     ///
-    /// A window recieves this message through its `WindowProc` function.
+    /// A window receives this message through its `WindowProc` function.
     pub const NonclientDestroy = struct {
         pub const message = WM.NCDESTROY;
         /// If an application processes this message, it should return this value.
