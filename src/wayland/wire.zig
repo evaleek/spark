@@ -11,10 +11,10 @@ pub const object_id = struct {
 pub const Header = extern struct {
     /// The sender's object ID
     object: u32,
-    msg: packed struct(u32) {
+    info: packed struct(u32) {
         /// The request/event opcode
         op: u16,
-        /// The message size in bytes, including the header (i.e. always >=8)
+        /// The message size in bytes, including this header (i.e. always >=8)
         size: u16,
     },
 };
@@ -56,9 +56,12 @@ pub inline fn payloadSize(args: anytype) u16 {
     return size;
 }
 
-/// For a struct `args` whose fields are all valid types found in `protocol`,
+/// For a struct `args` whose fields are all arg types found in `protocol`,
 /// write the message payload bytes as they should appear
 /// immediately following the header.
+///
+/// The caller is responsible for transferring file descriptor args
+/// with `SCM_RIGHTS` ancillary to these bytes (in no particular order).
 pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
     const native_endian = @import("builtin").target.cpu.arch.endian(); // TODO is Endian decl in 0.16
     const Args = @TypeOf(args);
@@ -80,22 +83,21 @@ pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
                 }
             },
             else => {
-                const object = arg;
-                const Object = @TypeOf(object);
+                const Object = @TypeOf(arg);
                 const info = @typeInfo(Object);
                 const is_optional = info == .optional;
                 const ObjectNoOptional = if (is_optional) info.optional.child else Object;
                 if (comptime isProtocolInterface(ObjectNoOptional)) {
                     if (is_optional) {
-                        if (object) |o| {
-                            assert(o.id != 0);
-                            try writer.writeInt(u32, o.id, native_endian);
+                        if (arg) |object| {
+                            assert(object.id != 0);
+                            try writer.writeInt(u32, object.id, native_endian);
                         } else {
                             try writer.writeInt(u32, 0, native_endian);
                         }
                     } else {
-                        assert(object.id != 0);
-                        try writer.writeInt(u32, object.id, native_endian);
+                        assert(arg.id != 0);
+                        try writer.writeInt(u32, arg.id, native_endian);
                     }
                 } else {
                     @compileError(comptimePrint(
