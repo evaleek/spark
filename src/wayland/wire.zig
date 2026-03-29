@@ -13,7 +13,7 @@ pub const Header = extern struct {
     object: u32,
     info: packed struct(u32) {
         /// The request/event opcode
-        op: u16,
+        operation: u16,
         /// The message size in bytes, including this header (i.e. always >=8)
         size: u16,
     },

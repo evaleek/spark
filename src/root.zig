@@ -1,5 +1,7 @@
 //! This module provides a uniform cross-backend client windowing abstraction.
 
+pub const ipc = @import("ipc.zig");
+
 //pub const X11 = struct {
 //    pub const Linked = @import("X11/Linked.zig");
 //};
