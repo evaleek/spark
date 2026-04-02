@@ -72,6 +72,19 @@ pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
                     try writer.writeInt(u32, 0, native_endian);
                 }
             },
+            protocol.Interface => @compileError("TODO"),
+            protocol.Interface.New => {
+                comptime {
+                    const info = @typeInfo(protocol.Interface.New).@"struct";
+                    debug.assert(info.fields.len == 3);
+                    debug.assert(std.mem.eql(u8, "name", info.fields[0].name));
+                    debug.assert(std.mem.eql(u8, "version", info.fields[1].name));
+                    debug.assert(std.mem.eql(u8, "id", info.fields[2].name));
+                }
+                try writeStringArg(writer, arg.name);
+                try writer.writeInt(u32, arg.version, native_endian);
+                try writer.writeInt(u32, arg.id, native_endian);
+            },
             else => {
                 const Object = @TypeOf(arg);
                 const info = @typeInfo(Object);
@@ -115,14 +128,14 @@ pub fn writeStringArg(writer: *Io.Writer, string: String) Io.Writer.Error!void {
     assert(string_with_terminator[string_with_terminator.len-1] == 0);
     try writer.writeInt(u32, string.len, native_endian);
     try writer.writeAll(string_with_terminator);
-    try writer.splatByte(undefined, diffToMultiple(string.len, 4));
+    try writer.splatByteAll(undefined, diffToMultiple(string.len, 4));
 }
 
 pub fn writeArrayArg(writer: *Io.Writer, array: Array) Io.Writer.Error!void {
     const native_endian = @import("builtin").target.cpu.arch.endian(); // TODO is Endian decl in 0.16
     try writer.writeInt(u32, array.size, native_endian);
     try writer.writeAll(array.ptr[0..array.size]);
-    try writer.splatByte(undefined, diffToMultiple(array.size, 4));
+    try writer.splatByteAll(undefined, diffToMultiple(array.size, 4));
 }
 
 /// `Message` is a Request or Event `.Message` tagged union from `protocol`.
@@ -213,6 +226,8 @@ pub fn argsFromPayload(
                 @field(args, field.name) = Array{ .size = size, .ptr = remaining.ptr };
                 remaining = try payloadNext(remaining, ceilingMultiple(size, 4));
             },
+
+            protocol.Interface.New => @compileError(@typeName(Args) ++ ": TODO"),
 
             else => |Object| {
                 const info = @typeInfo(Object);
@@ -322,6 +337,22 @@ pub fn printArgs(writer: *std.Io.Writer, args: anytype) std.Io.Writer.Error!void
                     try writer.writeAll("null");
                 }
             },
+            protocol.Interface.New => {
+                comptime {
+                    const info = @typeInfo(protocol.Interface.New).@"struct";
+                    debug.assert(info.fields.len == 3);
+                    debug.assert(std.mem.eql(u8, "name", info.fields[0].name));
+                    debug.assert(std.mem.eql(u8, "version", info.fields[1].name));
+                    debug.assert(std.mem.eql(u8, "id", info.fields[2].name));
+                }
+                try writer.writeAll("{ name: \"");
+                try arg.name.format(writer);
+                try writer.writeAll("\", version: ");
+                try writer.writeInt(arg.version);
+                try writer.writeAll(", id: ");
+                try writer.writeInt(arg.id);
+                try writer.writeAll(" }");
+            },
             else => |A| {
                 const info = @typeInfo(A);
                 if (info == .@"struct"
@@ -395,6 +426,16 @@ pub inline fn payloadSize(args: anytype) u16 {
             String => size += 4 + ceilingMultiple(arg.len, 4),
             ?String => size += 4 + ( if (arg) |string| ceilingMultiple(string.len, 4) else 0 ),
             Array => size += 4 + ceilingMultiple(arg.len, 4),
+            protocol.Interface.New => {
+                comptime {
+                    const info = @typeInfo(protocol.Interface.New).@"struct";
+                    debug.assert(info.fields.len == 3);
+                    debug.assert(std.mem.eql(u8, "name", info.fields[0].name));
+                    debug.assert(std.mem.eql(u8, "version", info.fields[1].name));
+                    debug.assert(std.mem.eql(u8, "id", info.fields[2].name));
+                }
+                size += 12 + @as(@TypeOf(size), @intCast(ceilingMultiple(arg.name.len, 4)));
+            },
             else => {
                 const object = arg;
                 const Object = @TypeOf(object);
@@ -485,7 +526,7 @@ inline fn diffToMultiple(x: anytype, n: @TypeOf(x)) @TypeOf(x) {
         .unsigned => {
             const signed_x: @Int(.signed, info.bits) = @intCast(x);
             const signed_n: @Int(.signed, info.bits) = @intCast(n);
-            return @mod(-signed_x, signed_n);
+            return @intCast(@mod(-signed_x, signed_n));
         },
         .signed => return @mod(-x, n),
     }

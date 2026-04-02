@@ -251,6 +251,8 @@ pub fn writeProtocolSource(
         \\    id: {s},
         \\
         \\    pub const New = struct {{
+        \\        name: String,
+        \\        version: {s},
         \\        id: {s},
         \\    }};
         \\}};
@@ -259,6 +261,7 @@ pub fn writeProtocolSource(
         , .{
             format.generic_interface_type_name,
             @typeName(ObjectID),
+            @typeName(u32),
             @typeName(ObjectID),
         },
     );
