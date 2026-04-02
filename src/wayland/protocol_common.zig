@@ -31,6 +31,12 @@ pub const Fixed = packed struct(i32) {
     pub fn fromInt(int: i32) Fixed {
         return @bitCast(int * 256);
     }
+
+    pub fn format(fixed: Fixed, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        try w.printInt(fixed.integer, 10, .lower, .{});
+        try w.writeByte('.');
+        try w.printInt(fixed.decimal, 10, .lower, .{});
+    }
 };
 
 pub const String = struct {
@@ -51,16 +57,34 @@ pub const String = struct {
             .ptr = slice.ptr,
         };
     }
+
+    pub fn format(string: String, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        try w.writeByte('"');
+        try w.writeAll(string.toSlice());
+        try w.writeByte('"');
+    }
 };
 
 pub const Array = struct {
     /// Size of array contents in bytes
     size: u32,
     ptr: [*]const u8,
+
+    pub fn format(array: Array, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        const max_print = 8;
+        const bytes = array.ptr[0..@min(array.size, max_print)];
+        try w.writeAll("{ ");
+        try w.printHex(bytes, .upper);
+        try w.writeByte(' ');
+        if (array.size > max_print) try w.writeAll("... ");
+        try w.writeByte('}');
+    }
 };
 
 /// File descriptors are not sent directly within the corresponding message,
 /// but in the ancillary data of the UNIX domain socket message (`msg_control`).
 pub const File = struct {
-    descriptor: @import("std").posix.fd_t,
+    descriptor: std.posix.fd_t,
 };
+
+const std = @import("std");

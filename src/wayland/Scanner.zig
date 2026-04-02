@@ -285,7 +285,7 @@ pub fn writeProtocolSource(
     } else false;
     const wl_object_src = [_][]const u8{
         "/// A special pseudo-interface representing any Wayland object.",
-        "pub const Object = struct {",
+        "pub const AnyWaylandObject = struct {",
         std.fmt.comptimePrint("    id: {s},", .{ @typeName(ObjectID) }),
         "",
         "    pub const New = struct {",
@@ -300,6 +300,41 @@ pub fn writeProtocolSource(
         }
         try writer.writeByte('\n');
     }
+
+    try writer.writeAll("pub const Protocol = enum {\n");
+    for (protocols) |protocol| {
+        try writer.splatBytesAll(format.indent, 1);
+        try writer.writeAll(protocol.name);
+        try writer.writeAll(",\n");
+    }
+    try writer.writeByte('\n');
+    try writer.splatBytesAll(format.indent, 1);
+    try writer.writeAll("pub fn ToProtocol(protocol: Protocol) type {\n");
+    try writer.splatBytesAll(format.indent, 2);
+    try writer.writeAll("return switch (protocol) {\n");
+    for (protocols) |protocol| {
+        try writer.splatBytesAll(format.indent, 3);
+        try writer.writeByte('.');
+        try writer.writeAll(protocol.name);
+        try writer.writeAll(" => ");
+        try writer.writeAll(protocol.name);
+        try writer.writeAll(",\n");
+    }
+    try writer.splatBytesAll(format.indent, 2);
+    try writer.writeAll("};\n");
+    try writer.splatBytesAll(format.indent, 1);
+    try writer.writeAll("}\n");
+    try writer.writeAll("};\n\n");
+
+    try writer.writeAll("pub const AnyObject = union(Protocol) {\n");
+    for (protocols) |protocol| {
+        try writer.splatBytesAll(format.indent, 1);
+        try writer.writeAll(protocol.name);
+        try writer.writeAll(": ");
+        try writer.writeAll(protocol.name);
+        try writer.writeAll(".Object,\n");
+    }
+    try writer.writeAll("};\n\n");
 
     for (protocols, 0..) |protocol, protocol_index| {
         if (protocol.copyright) |copyright| {
@@ -332,6 +367,49 @@ pub fn writeProtocolSource(
         try writer.writeAll("pub const ");
         try writeNameDecollided(allocator, writer, protocol.name);
         try writer.writeAll(" = struct {\n");
+
+        try writer.splatBytesAll(format.indent, 1);
+        try writer.writeAll("pub const Object = enum {\n");
+
+        try writer.splatBytesAll(format.indent, 2);
+        try writer.writeAll("pub const prefix: ?[]const u8 = ");
+        if (interface_prefix) |prefix| {
+            try writer.writeByte('"');
+            try writer.writeAll(prefix);
+            try writer.writeByte('"');
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(";\n\n");
+
+        for (protocol.interfaces) |interface| {
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll( if (interface_prefix) |prefix| interface.name[prefix.len..] else interface.name );
+            try writer.writeAll(",\n");
+        }
+        if (protocol.interfaces.len > 0) {
+            try writer.writeByte('\n');
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("pub fn ToInterface(object: Object) type {\n");
+            try writer.splatBytesAll(format.indent, 3);
+            try writer.writeAll("return switch (object) {\n");
+            for (protocol.interfaces) |interface| {
+                const name = if (interface_prefix) |prefix| interface.name[prefix.len..] else interface.name;
+                const upper_name = try upperName(allocator, name);
+                defer allocator.free(upper_name);
+                try writer.splatBytesAll(format.indent, 4);
+                try writer.writeByte('.');
+                try writer.writeAll(name);
+                try writer.writeAll(" => ");
+                try writer.writeAll(upper_name);
+                try writer.writeAll(",\n");
+            }
+            try writer.splatBytesAll(format.indent, 3);
+            try writer.writeAll("};\n");
+            try writer.splatBytesAll(format.indent, 2);
+            try writer.writeAll("}\n");
+        }
+        try writer.writeAll("};\n\n");
 
         if (has_wl_object and has_wayland_protocol and mem.eql(u8, "wayland", protocol.name)) {
             for (wl_object_src) |line| {
@@ -600,7 +678,7 @@ pub fn writeProtocolSource(
                                     .object, .new_id => |t| {
                                         if (arg.interface) |interface_name| {
                                             if (mem.eql(u8, interface_name, "wl_object")) {
-                                                try writer.writeAll("Object");
+                                                try writer.writeAll("AnyWaylandObject");
                                             } else {
                                                 const parent_protocol_name: []const u8 = try find_parent: {
                                                     for (protocols) |p| {

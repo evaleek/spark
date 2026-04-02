@@ -22,38 +22,28 @@ comptime { assert(@sizeOf(Header) == 8); }
 
 // TODO test of all message structs that written bytes == payloadSize
 
-/// For a struct `args` whose fields are all valid types found in `protocol`,
-/// find their total size over the wire in bytes.
-pub inline fn payloadSize(args: anytype) u16 {
-    const Args = @TypeOf(args);
-    var size: u16 = 0;
-    inline for (@typeInfo(Args).@"struct".fields) |field| {
-        const arg = @field(args, field.name);
-        switch (field.@"type") {
-            i32, u32, Fixed => |T| size += @sizeOf(T),
-            String => size += 4 + ceilingMultiple(arg.len, 4),
-            ?String => size += 4 + ( if (arg) |string| ceilingMultiple(string.len, 4) else 0 ),
-            Array => size += 4 + ceilingMultiple(arg.len, 4),
-            else => {
-                const object = arg;
-                const Object = @TypeOf(object);
-                const info = @typeInfo(Object);
-                const is_optional = info == .optional;
-                const ObjectNoOptional = if (is_optional) info.optional.child else Object;
-                if (comptime isProtocolInterface(ObjectNoOptional)) {
-                    size += 4;
-                } else {
-                    @compileError(comptimePrint(
-                        "expected a {s} interface container, found {s}",
-                        .{ @typeName(protocol), @typeName(Object) },
-                    ));
-                }
-            },
-            FD => @panic("TODO"),
+/// For an object which is a child of a protocol in `protocols`,
+/// write a request message to `writer`.
+///
+/// This function ignores file descriptor arguments of the message.
+/// The caller is responsible for transferring these.
+pub fn writeMessage(
+    writer: *Io.Writer,
+    object: anytype,
+    message: @TypeOf(object).Request.Message,
+) Io.Writer.Error!void {
+    switch (message) {
+        inline else => |request, request_tag| {
+            try writer.writeStruct(Header{
+                .object = object.id,
+                .info = .{
+                    .operation = @intFromEnum(request_tag),
+                    .size = @sizeOf(Header) + payloadSize(request),
+                },
+            }, endian);
+            try writeArgsAll(writer, request);
         }
     }
-    assert(size % 4 == 0);
-    return size;
 }
 
 /// For a struct `args` whose fields are all arg types found in `protocol`,
@@ -85,29 +75,36 @@ pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
             else => {
                 const Object = @TypeOf(arg);
                 const info = @typeInfo(Object);
-                const is_optional = info == .optional;
-                const ObjectNoOptional = if (is_optional) info.optional.child else Object;
-                if (comptime isProtocolInterface(ObjectNoOptional)) {
-                    if (is_optional) {
-                        if (arg) |object| {
-                            assert(object.id != 0);
-                            try writer.writeInt(u32, object.id, native_endian);
+                if ( comptime
+                    ( (info == .@"struct" and info.@"struct".layout == .@"packed") or info == .@"enum" )
+                    and @bitSizeOf(Object) == 32
+                ) {
+                    try writer.writeInt(u32, @bitCast(arg), native_endian);
+                } else {
+                    const is_optional = info == .optional;
+                    const ObjectNoOptional = if (is_optional) info.optional.child else Object;
+                    if (comptime isProtocolInterface(ObjectNoOptional)) {
+                        if (is_optional) {
+                            if (arg) |object| {
+                                assert(object.id != 0);
+                                try writer.writeInt(u32, object.id, native_endian);
+                            } else {
+                                try writer.writeInt(u32, 0, native_endian);
+                            }
                         } else {
-                            try writer.writeInt(u32, 0, native_endian);
+                            assert(arg.id != 0);
+                            try writer.writeInt(u32, arg.id, native_endian);
                         }
                     } else {
-                        assert(arg.id != 0);
-                        try writer.writeInt(u32, arg.id, native_endian);
+                        @compileError(comptimePrint(
+                            "expected a {s} interface container, found {s}",
+                            .{ @typeName(protocol), @typeName(Object) },
+                        ));
                     }
-                } else {
-                    @compileError(comptimePrint(
-                        "expected a {s} interface container, found {s}",
-                        .{ @typeName(protocol), @typeName(Object) },
-                    ));
                 }
             },
             Array => try writeArrayArg(writer, arg),
-            FD => @panic("TODO"),
+            File => @panic("TODO"),
         }
     }
 }
@@ -219,25 +216,33 @@ pub fn argsFromPayload(
 
             else => |Object| {
                 const info = @typeInfo(Object);
-                const is_optional = info == .optional;
-                const ObjectNoOptional = if (is_optional) info.optional.child else Object;
-                if (comptime isProtocolInterface(ObjectNoOptional)) {
-                    const id = mem.bytesToValue(u32, remaining[0..@sizeOf(u32)]);
-                    if (id != 0) {
-                        @field(args, field.name) = .{ .id = id };
-                    } else {
-                        if (is_optional) {
-                            @field(args, field.name) = null;
-                        } else {
-                            return error.InvalidOptional;
-                        }
-                    }
-                    remaining = try payloadNext(remaining, @sizeOf(u32));
+                if ( comptime
+                    ( (info == .@"struct" and info.@"struct".layout == .@"packed") or info == .@"enum" )
+                    and @bitSizeOf(Object) == 32
+                ) {
+                    @field(args, field.name) = mem.bytesToValue(Object, remaining[0..@sizeOf(Object)]);
+                    remaining = try payloadNext(remaining, @sizeOf(Object));
                 } else {
-                    @compileError(comptimePrint(
-                        "expected a {s} interface container, found {s}",
-                        .{ @typeName(protocol), @typeName(Object) },
-                    ));
+                    const is_optional = info == .optional;
+                    const ObjectNoOptional = if (is_optional) info.optional.child else Object;
+                    if (comptime isProtocolInterface(ObjectNoOptional)) {
+                        const id = mem.bytesToValue(u32, remaining[0..@sizeOf(u32)]);
+                        if (id != 0) {
+                            @field(args, field.name) = .{ .id = id };
+                        } else {
+                            if (is_optional) {
+                                @field(args, field.name) = null;
+                            } else {
+                                return error.InvalidOptional;
+                            }
+                        }
+                        remaining = try payloadNext(remaining, @sizeOf(u32));
+                    } else {
+                        @compileError(comptimePrint(
+                            "expected a {s} interface container, found {s}",
+                            .{ @typeName(protocol), @typeName(Object) },
+                        ));
+                    }
                 }
             },
 
@@ -268,6 +273,149 @@ pub const PayloadMalformation = error{
     /// A string or object not typed as optional was passed as NULL
     InvalidOptional,
 };
+
+pub fn mapInterfaceName(name: []const u8) ?protocol.AnyObject {
+    const map: std.StaticStringMap(protocol.AnyObject) = comptime .initComptime(&kvs: {
+        const count = count: {
+            var c: usize = 0;
+            for (@typeInfo(protocol.AnyObject).@"union".fields) |field| {
+                const Object = field.type;
+                c += @typeInfo(Object).@"enum".fields.len;
+            }
+            break :count c;
+        };
+        var kvs: [count]struct { []const u8, protocol.AnyObject } = undefined;
+        var i: usize = 0;
+        for (@typeInfo(protocol.AnyObject).@"union".fields) |field| {
+            const Object = field.type;
+            for (@typeInfo(Object).@"enum".fields) |field_inner| {
+                kvs[i] = .{
+                    ( if (Object.prefix) |prefix| prefix else "" ) ++ field_inner.name,
+                    @unionInit(protocol.AnyObject, field.name, @enumFromInt(field_inner.value)),
+                };
+                i += 1;
+            }
+        }
+        debug.assert(i == kvs.len);
+        break :kvs kvs;
+    });
+    return map.get(name);
+}
+
+pub fn printArgs(writer: *std.Io.Writer, args: anytype) std.Io.Writer.Error!void {
+    const Args = @TypeOf(args);
+    try writer.writeAll("{ ");
+    const fields = @typeInfo(Args).@"struct".fields;
+    inline for (fields, 0..) |field, i| {
+        const Arg = @FieldType(Args, field.name);
+        const arg = @field(args, field.name);
+        try writer.writeAll(field.name);
+        try writer.writeAll(": ");
+        switch (Arg) {
+            i32, u32 => try writer.printInt(arg, 10, .lower, .{}),
+            Fixed, String, Array => try arg.format(writer),
+            File => try writer.print("fd{{ {d} }}", .{arg.descriptor}),
+            ?String => {
+                if (arg) |a| {
+                    try a.format(writer);
+                } else {
+                    try writer.writeAll("null");
+                }
+            },
+            else => |A| {
+                const info = @typeInfo(A);
+                if (info == .@"struct"
+                        and info.@"struct".fields.len == 1
+                        and comptime std.mem.eql(u8, "id", info.@"struct".fields[0].name)) {
+                    try writer.print("id{{ {d} }}", .{arg.id});
+                } else if (info == .optional) {
+                    const info_inner = @typeInfo(info.optional.child);
+                    if (info_inner == .@"struct"
+                            and info_inner.@"struct".fields.len == 1
+                            and comptime std.mem.eql(u8, "id", info_inner.@"struct".fields[0].name)) {
+                        if (arg) |a| {
+                            try writer.print("id{{ {d} }}", .{a.id});
+                        } else {
+                            try writer.writeAll("id{{ null }}");
+                        }
+                    } else {
+                        @compileError(@typeName(A) ++ " is not a valid message arg");
+                    }
+                } else if (@bitSizeOf(A) == 32) {
+                    switch (info) {
+                        .@"enum" => try writer.writeAll(@tagName(arg)),
+                        .@"struct" => |struct_info| {
+                            try writer.writeAll("{ ");
+                            inline for (struct_info.fields) |field_inner| {
+                                if (field_inner.name[0] != '_' and @field(arg, field_inner.name)) {
+                                    try writer.writeByte('.');
+                                    try writer.writeAll(field_inner.name);
+                                    try writer.writeByte(' ');
+                                }
+                            }
+                            try writer.writeByte('}');
+                        },
+                        else => comptime unreachable,
+                    }
+                } else {
+                    @compileError(@typeName(A) ++ " is not a valid message arg");
+                }
+            },
+        }
+        if (i != fields.len - 1) try writer.writeByte(',');
+        try writer.writeByte(' ');
+    }
+    try writer.writeByte('}');
+}
+
+/// Creates a wrapper suitable for passing to a "{f}" placeholder.
+pub fn formatAlt(args: anytype) FormatAlt(@TypeOf(args)) {
+    return .{ .data = args };
+}
+
+/// Creates a wrapper type suitable for passing to a "{f}" placeholder.
+pub fn FormatAlt(comptime Args: type) type {
+    return struct {
+        data: Args,
+        pub inline fn format(self: @This(), writer: *Io.Writer) Io.Writer.Error!void {
+            try printArgs(writer, self.data);
+        }
+    };
+}
+
+/// For a struct `args` whose fields are all valid types found in `protocol`,
+/// find their total size over the wire in bytes.
+pub inline fn payloadSize(args: anytype) u16 {
+    const Args = @TypeOf(args);
+    var size: u16 = 0;
+    inline for (@typeInfo(Args).@"struct".fields) |field| {
+        const arg = @field(args, field.name);
+        switch (field.@"type") {
+            i32, u32, Fixed => |T| size += @sizeOf(T),
+            String => size += 4 + ceilingMultiple(arg.len, 4),
+            ?String => size += 4 + ( if (arg) |string| ceilingMultiple(string.len, 4) else 0 ),
+            Array => size += 4 + ceilingMultiple(arg.len, 4),
+            else => {
+                const object = arg;
+                const Object = @TypeOf(object);
+                const info = @typeInfo(Object);
+                const is_optional = info == .optional;
+                const ObjectNoOptional = if (is_optional) info.optional.child else Object;
+                if (comptime isProtocolInterface(ObjectNoOptional)) {
+                    size += 4;
+                } else {
+                    @compileError(comptimePrint(
+                        "expected a {s} interface container, found {s}",
+                        .{ @typeName(protocol), @typeName(Object) },
+                    ));
+                }
+            },
+            File => @panic("TODO"),
+        }
+    }
+    assert(size % 4 == 0);
+    return size;
+}
 
 pub fn expectedAncillaryCount(comptime Args: type) usize {
     var count: usize = 0;
@@ -365,7 +513,8 @@ pub const File = protocol.File;
 pub const FD = @import("std").posix.fd_t;
 
 /// Wayland wire protocol follows the host system endianness
-pub const endian = std.builtin.Endian.native;
+/// TODO is std.builtin.Endian.native in 0.16
+pub const endian = @import("builtin").target.cpu.arch.endian();
 
 const assert = debug.assert;
 const comptimePrint = std.fmt.comptimePrint;
