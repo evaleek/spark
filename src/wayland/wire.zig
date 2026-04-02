@@ -235,6 +235,7 @@ pub fn argsFromPayload(
                     ( (info == .@"struct" and info.@"struct".layout == .@"packed") or info == .@"enum" )
                     and @bitSizeOf(Object) == 32
                 ) {
+                    comptime { if (info == .@"enum") debug.assert(!info.@"enum".is_exhaustive); }
                     @field(args, field.name) = mem.bytesToValue(Object, remaining[0..@sizeOf(Object)]);
                     remaining = try payloadNext(remaining, @sizeOf(Object));
                 } else {
@@ -374,7 +375,17 @@ pub fn printArgs(writer: *std.Io.Writer, args: anytype) std.Io.Writer.Error!void
                     }
                 } else if (@bitSizeOf(A) == 32) {
                     switch (info) {
-                        .@"enum" => try writer.writeAll(@tagName(arg)),
+                        .@"enum" => |@"enum"| {
+                            if (@"enum".is_exhaustive) {
+                                try writer.writeAll(@tagName(arg));
+                            } else {
+                                if (enums.tagName(Arg, arg)) |tag| {
+                                    try writer.writeAll(tag);
+                                } else {
+                                    try writer.print("(unknown: {d})", .{ @intFromEnum(arg) });
+                                }
+                            }
+                        },
                         .@"struct" => |struct_info| {
                             try writer.writeAll("{ ");
                             inline for (struct_info.fields) |field_inner| {
