@@ -658,14 +658,6 @@ pub const DomainStream = struct {
     };
 };
 
-pub fn closeFd(fd: system.fd_t) void {
-    switch (system.errno(system.close(fd))) {
-        .SUCCESS, .INTR => {},
-        .BADF => unreachable,
-        else => unreachable,
-    }
-}
-
 pub const cmsg = struct {
     pub const hdr = extern struct {
         // See `std.c.MuslOnlyPadding`
@@ -784,11 +776,13 @@ fn MuslOnlyPadding(endian: std.builtin.Endian) type {
 const system = posix.system;
 const native_os = builtin.os.tag;
 const native_endian = builtin.target.cpu.arch.endian();
+pub const closeFd = root.closeFd;
 
 const Io = std.Io;
 const posix = std.posix;
 const mem = std.mem;
 const debug = std.debug;
 const testing = std.testing;
+const root = @import("root.zig");
 const std = @import("std");
 const builtin = @import("builtin");
