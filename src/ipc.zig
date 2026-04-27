@@ -62,13 +62,14 @@ pub const DomainStream = struct {
         stream.* = undefined;
     }
 
-    pub fn open(path: []const u8, options: ConnectOptions) !DomainStream {
-        // TODO how do i know whether the system wants sockaddr or sockaddr_un?
-        const Address = system.sockaddr.un;
-        // `-1` to always leave a sentinel TODO is that necessary?
-        const max_path_len = @typeInfo(@FieldType(Address, "path")).array.len - 1;
-        if (path.len > max_path_len) return error.NameTooLong;
-        if (path.len == 0) return error.PathEmpty;
+    /// Asserts the `address.path` contains a `0`-terminated path.
+    pub fn open(address: *const system.sockaddr.un, options: ConnectOptions) !DomainStream {
+        //// TODO how do i know whether the system wants sockaddr or sockaddr_un?
+        //const Address = system.sockaddr.un;
+        //// `-1` to always leave a sentinel TODO is that necessary?
+        //const max_path_len = @typeInfo(@FieldType(Address, "path")).array.len - 1;
+        //if (path.len > max_path_len) return error.NameTooLong;
+        //if (path.len == 0) return error.PathEmpty;
 
         const socket_fd: system.fd_t = while (true) {
             // TODO on non linux systems we just have to see if some flags are present
@@ -99,19 +100,23 @@ pub const DomainStream = struct {
         };
         errdefer closeFd(socket_fd);
 
-        const address = addr: {
-            var addr: Address = .{
-                .family = posix.AF.UNIX,
-                .path = @splat(0),
-            };
-            @memcpy(addr.path[0..path.len], path);
-            break :addr addr;
-        };
-        const address_len: system.socklen_t = @intCast(@offsetOf(Address, "path") + path.len + 1);
+        //const address = addr: {
+        //    var addr: Address = .{
+        //        .family = posix.AF.UNIX,
+        //        .path = @splat(0),
+        //    };
+        //    @memcpy(addr.path[0..path.len], path);
+        //    break :addr addr;
+        //};
+        if (address.family != posix.AF.UNIX) unreachable;
+        const path_len = for (address.path, 0..) |char, i| {
+            if (char == 0) break i;
+        } else unreachable; // assert the passed path is null-terminated
+        const address_len: system.socklen_t = @intCast(@offsetOf(system.sockaddr.un, "path") + path_len + 1);
 
         while (true) {
             // TODO remove ptrcast in 0.16 where the address is anyopaque
-            switch (system.errno(system.connect(socket_fd, @ptrCast(&address), address_len))) {
+            switch (system.errno(system.connect(socket_fd, @ptrCast(address), address_len))) {
                 .SUCCESS => break,
                 .INTR => continue,
                 .ISCONN => return error.IsConnected,
@@ -154,9 +159,9 @@ pub const DomainStream = struct {
         control: ?[]const align(cmsg.algn) u8,
         options: SendReceiveOptions,
     ) (SendError || error{WouldBlock})!usize {
-        debug.assert(data.len > 0);
-        for (data) |buf| debug.assert(buf.len > 0);
-        if (control) |buffer| debug.assert(cmsg.alignment.check(buffer.len));
+        if (data.len == 0) unreachable;
+        for (data) |buf| { if (buf.len == 0) unreachable; }
+        if (control) |buffer| { if (!cmsg.alignment.check(buffer.len)) unreachable; }
 
         const msg: system.msghdr_const = .{
             .name = null,
@@ -220,9 +225,9 @@ pub const DomainStream = struct {
         control_buffer: []align(cmsg.algn) u8,
         options: SendReceiveOptions,
     ) (ReceiveError || error{WouldBlock})!struct{ usize, ?[]align(cmsg.algn) u8 } {
-        debug.assert(data.len > 0);
-        for (data) |buf| debug.assert(buf.len > 0);
-        debug.assert(cmsg.alignment.check(control_buffer.len));
+        if (data.len == 0) unreachable;
+        for (data) |buf| { if (buf.len == 0) unreachable; }
+        if (!cmsg.alignment.check(control_buffer.len)) unreachable;
 
         var msg: system.msghdr = .{
             .name = null,
@@ -276,6 +281,89 @@ pub const DomainStream = struct {
         }
     }
 
+    /// Send as much data queued for sending in the `TransferQueue`
+    /// as the stream will accept in one call.
+    pub fn flushQueue(
+        stream: DomainStream,
+        queue: *TransferQueue,
+        options: SendReceiveOptions,
+    ) (SendError || error{WouldBlock})!void {
+        const buffered: []u8 = queue.send.readable();
+        // TODO confirm passing the double mapped ring buffer slice to sendmsg causes no problems
+        if (buffered.len > 0) {
+            const sent_size = try stream.send(
+                &.{ .{ .base = buffered.ptr, .len = buffered.len } },
+                queue.fd_send.sendable(),
+                options,
+            );
+            queue.fd_send.clear();
+            if (sent_size > buffered.len) unreachable;
+            @memset(buffered[0..sent_size], undefined);
+            queue.send.consume(sent_size);
+            queue.send.resetIfEmpty();
+        }
+    }
+
+    pub fn fillQueue(
+        stream: DomainStream,
+        queue: *TransferQueue,
+        options: SendReceiveOptions,
+    ) (error{EndOfStream} || ReceiveError || error{WouldBlock})!void {
+        const bufferable: []u8 = queue.receive.writable();
+        if (bufferable.len > 0) {
+            var recv_data: [1]posix.iovec = .{ .{ .base = bufferable.ptr, .len = bufferable.len } };
+            const received_size, const received_control = try stream.receive(
+                &recv_data,
+                queue.control,
+                options,
+            );
+            if (received_size > bufferable.len) unreachable;
+            if (queue.receive.publishWillOverflow(received_size)) {
+                @branchHint(.cold);
+                queue.receive.normalize();
+            }
+            queue.receive.publish(received_size);
+            if (received_control) |control| {
+                var cmsg_iter: cmsg.Iterator = .{ .control = control };
+                while (cmsg_iter.nextMatching(.{ .socket = .rights })) |cmsg_data| {
+                    // TODO we have guarantee that cmsg will always slice exactly like this?
+                    const fds: []const align(1) system.fd_t = mem.bytesAsSlice(system.fd_t, cmsg_data);
+                    queue.receivedFdsAppend(fds) catch return error.AncillaryOverflow;
+                }
+            }
+            @memset(queue.control, undefined);
+            if (received_size == 0) return error.EndOfStream;
+        }
+    }
+
+    pub fn fillQueueNoNormalize(
+        stream: DomainStream,
+        queue: *TransferQueue,
+        options: SendReceiveOptions,
+    ) (error{EndOfStream} || ReceiveError || error{WouldBlock})!void {
+        const bufferable: []u8 = stream.receive.writable();
+        if (bufferable.len > 0) {
+            var recv_data: [1]posix.iovec = .{ .base = bufferable.ptr, .len = bufferable.len };
+            const received_size, const received_control = try stream.receive(
+                &recv_data,
+                queue.control,
+                options,
+            );
+            if (received_size > bufferable.len) unreachable;
+            queue.receive.publish(received_size);
+            if (received_control) |control| {
+                var cmsg_iter: cmsg.Iterator = .{ .control = control };
+                while (cmsg_iter.nextMatching(.{ .socket = .rights })) |cmsg_data| {
+                    // TODO we have guarantee that cmsg will always slice exactly like this?
+                    const fds: []const align(1) system.fd_t = mem.bytesAsSlice(system.fd_t, cmsg_data);
+                    queue.receivedFdsAppend(fds) catch return error.AncillaryOverflow;
+                }
+            }
+            @memset(queue.control, undefined);
+            if (received_size == 0) return error.EndOfStream;
+        }
+    }
+
     pub fn reader(
         stream: DomainStream,
         data_buffer: []u8,
@@ -318,7 +406,7 @@ pub const DomainStream = struct {
             control_buffer: []align(cmsg.algn) u8,
             fd_buffer: []system.fd_t,
         ) Reader {
-            debug.assert(std.math.isPowerOfTwo(fd_buffer.len));
+            if (!std.math.isPowerOfTwo(fd_buffer.len)) unreachable;
             return .{
                 .interface = .{
                     .vtable = &.{
@@ -352,7 +440,7 @@ pub const DomainStream = struct {
             var iovecs_buffer: [max_iovecs_count]posix.iovec = undefined;
             const dest_n, const data_size = try io_r.writableVectorPosix(&iovecs_buffer, data);
             const dest = iovecs_buffer[0..dest_n];
-            debug.assert(dest[0].len > 0);
+            if (dest[0].len == 0) unreachable;
             const n, const control = r.stream.receive(
                 dest,
                 r.control_buffer,
@@ -398,7 +486,7 @@ pub const DomainStream = struct {
         }
 
         pub fn takeFds(r: *Reader, comptime n: FdIndex) ?[n]system.fd_t {
-            debug.assert(r.fd_end <= r.fd_cap);
+            if (r.fd_end > r.fd_cap) unreachable;
             const len = r.fd_end - r.fd_seek;
             if (len >= n) {
                 const fds: [n]system.fd_t = r.fd_buf[r.fd_seek..][0..n].*;
@@ -416,14 +504,14 @@ pub const DomainStream = struct {
         }
 
         pub fn getAllFds(r: Reader) []system.fd_t {
-            debug.assert(r.fd_end <= r.fd_cap);
+            if (r.fd_end > r.fd_cap) unreachable;
             return r.fd_buf[r.fd_seek..r.fd_end];
         }
 
         /// Release the first `n` FDs that have been received.
         pub fn tossFds(r: *Reader, n: FdIndex) void {
             const len = r.fd_end - r.fd_seek;
-            debug.assert(n < len);
+            if (n >= len) unreachable;
             @memset(r.getAllFds()[0..n], undefined);
             if (n == len) {
                 r.fd_seek = 0;
@@ -507,7 +595,7 @@ pub const DomainStream = struct {
                             addBuf(&iovecs, &iovecs_count, buf);
                             var remaining_splat = splat - buf.len;
                             while (remaining_splat > splat_buffer.len and iovecs.len - iovecs_count != 0) {
-                                debug.assert(buf.len == splat_buffer.len);
+                                if (buf.len != splat_buffer.len) unreachable;
                                 addBuf(&iovecs, &iovecs_count, &splat_buffer);
                                 remaining_splat -= splat_buffer.len;
                             }
@@ -519,7 +607,7 @@ pub const DomainStream = struct {
                     },
                 };
             }
-            debug.assert(iovecs_count > 0);
+            if (iovecs_count == 0) unreachable;
             const n = w.stream.send(
                 iovecs[0..iovecs_count],
                 w.control.sendable(),
@@ -546,116 +634,538 @@ pub const DomainStream = struct {
             i.* += 1;
         }
     };
+};
 
-    // TODO this is currently tightly packing fds when it should be aware of their alignment?
+// TODO this is currently tightly packing fds when it should be aware of their alignment?
 
-    /// A control buffer containing a single `SCM_RIGHTS` message,
-    /// with a set of file descriptors to be transferred.
+/// A control buffer containing a single `SCM_RIGHTS` message,
+/// with a set of file descriptors to be transferred.
+///
+/// TODO linux specifies a maximum control buffer size at `/proc/sys/net/core/optmem_max`
+/// that could be checked
+pub const ControlBuffer = struct {
+    buffer: []align(cmsg.algn) u8,
+
+    pub fn getHeader(control: ControlBuffer) *cmsg.hdr {
+        const hdr: *cmsg.hdr = @ptrCast(control.buffer.ptr);
+        // If these asserts fail, the beginning of the buffer
+        // was mutated after initialization or was not initialized correctly.
+        if (hdr.pad0 != 0) unreachable;
+        if (hdr.pad1 != 0) unreachable;
+        if (hdr.len < cmsg.hdr.data_offset) unreachable;
+        if (hdr.level != .socket) unreachable;
+        if (hdr.@"type".socket != .rights) unreachable;
+        return hdr;
+    }
+
+    pub fn getData(control: ControlBuffer) []u8 {
+        const hdr = control.getHeader();
+        return control.buffer[0..hdr.len][cmsg.hdr.data_offset..];
+    }
+
+    pub fn bufferedFds(control: ControlBuffer) []system.fd_t {
+        return mem.bytesAsSlice(system.fd_t, control.data());
+    }
+
+    pub fn appendFd(control: ControlBuffer, fd: system.fd_t) error{OutOfMemory}!void {
+        return control.appendFds(&.{fd});
+    }
+
+    pub fn appendFds(control: ControlBuffer, fds: []const system.fd_t) error{OutOfMemory}!void {
+        return control.append(mem.sliceAsBytes(fds));
+    }
+
+    // TODO test append
+
+    pub fn append(control: ControlBuffer, data: []const u8) error{OutOfMemory}!void {
+        const hdr = control.getHeader();
+        const dest = control.buffer[hdr.len..];
+        if (dest.len <= data.len) {
+            @memcpy(dest[0..data.len], data);
+            hdr.len += data.len;
+        } else {
+            return error.OutOfMemory;
+        }
+    }
+
+    pub fn sendable(control: ControlBuffer) ?[]align(cmsg.algn) u8 {
+        const l = control.getHeader().len;
+        debug.assert(l >= cmsg.hdr.data_offset);
+        if (l == cmsg.hdr.data_offset) {
+            return null;
+        } else {
+            const ctrl = control.buffer[0..cmsg.alignment.forward(l)];
+            for (ctrl[l..]) |pad| { if (pad != 0) unreachable; }
+            return ctrl;
+        }
+    }
+
+    pub fn clear(control: ControlBuffer) void {
+        control.getHeader().len = cmsg.hdr.data_offset;
+        @memset(control.buffer[@sizeOf(cmsg.hdr)..], 0);
+    }
+
+    pub fn fromBuffer(buffer: []align(cmsg.algn) u8) ControlBuffer {
+        const hdr: *cmsg.hdr = @ptrCast(buffer.ptr);
+        // If these asserts fail, the beginning of the buffer
+        // was mutated after initialization or was not initialized correctly.
+        if (hdr.pad0 != 0) unreachable;
+        if (hdr.pad1 != 0) unreachable;
+        if (hdr.len < cmsg.hdr.data_offset) unreachable;
+        if (hdr.level != .socket) unreachable;
+        if (hdr.@"type".socket != .rights) unreachable;
+        return .{ .buffer = buffer };
+    }
+
+    pub fn init(buffer: []align(cmsg.algn) u8) ControlBuffer {
+        @memset(buffer, 0);
+        const hdr: *cmsg.hdr = @ptrCast(buffer.ptr);
+        hdr.* = .{
+            .len = cmsg.hdr.data_offset,
+            .level = .socket,
+            .@"type" = .{ .socket = .rights },
+        };
+        return .{ .buffer = buffer };
+    }
+
+    /// Returns necessary byte length to buffer a single control message
+    /// of at most `capacity` items.
     ///
-    /// TODO linux specifies a maximum control buffer size at `/proc/sys/net/core/optmem_max`
-    /// that could be checked
-    pub const ControlBuffer = struct {
-        buffer: []align(cmsg.algn) u8,
+    /// Due to end padding requirements,
+    /// the returned size may have a corresponding capacity
+    /// greater than what was requested.
+    pub fn sizeFromCapacity(comptime Item: type, capacity: usize) usize {
+        return cmsg.space(capacity * @sizeOf(Item));
+    }
 
-        pub fn getHeader(control: ControlBuffer) *cmsg.hdr {
-            const hdr: *cmsg.hdr = @ptrCast(control.buffer.ptr);
-            // If these asserts fail, the beginning of the buffer
-            // was mutated after initialization or was not initialized correctly.
-            debug.assert(hdr.pad0 == 0);
-            debug.assert(hdr.pad1 == 0);
-            debug.assert(hdr.len >= cmsg.hdr.data_offset);
-            debug.assert(hdr.level == .socket);
-            debug.assert(hdr.@"type".socket == .rights);
-            return hdr;
-        }
+    pub fn capacityFromSize(comptime Item: type, size: usize) usize {
+        return @divFloor(
+            size - cmsg.hdr.data_offset,
+            @sizeOf(Item),
+        );
+    }
+};
 
-        pub fn getData(control: ControlBuffer) []u8 {
-            const hdr = control.getHeader();
-            return control.buffer[0..hdr.len][cmsg.hdr.data_offset..];
-        }
+// TODO improvements:
+// - variant that parses with ring buffer wrap awareness
+//   (or eats cost of memmoving contents on overflow)
+//   and can be initialized with std alloced slices
 
-        pub fn bufferedFds(control: ControlBuffer) []system.fd_t {
-            return mem.bytesAsSlice(system.fd_t, control.data());
-        }
+/// Collection of buffers for queuing to-be-sent and received data
+/// and transferred file descriptors through a stream socket.
+///
+/// Allocates buffers directly with `mmap` in order to double-map ring buffers.
+pub const TransferQueue = struct {
+    send: MirrorRing,
+    receive: MirrorRing,
+    fd_send: ControlBuffer,
+    /// Access this field directly to peek received fds.
+    fd_receive: []system.fd_t,
+    fd_receive_capacity: usize,
+    control: []align(cmsg.algn) u8,
 
-        pub fn appendFd(control: ControlBuffer, fd: system.fd_t) error{OutOfMemory}!void {
-            return control.appendFds(&.{fd});
-        }
-
-        pub fn appendFds(control: ControlBuffer, fds: []const system.fd_t) error{OutOfMemory}!void {
-            return control.append(mem.sliceAsBytes(fds));
-        }
-
-        // TODO test append
-
-        pub fn append(control: ControlBuffer, data: []const u8) error{OutOfMemory}!void {
-            const hdr = control.getHeader();
-            const dest = control.buffer[hdr.len..];
-            if (dest.len <= data.len) {
-                @memcpy(dest[0..data.len], data);
-                hdr.len += data.len;
-            } else {
-                return error.OutOfMemory;
-            }
-        }
-
-        pub fn sendable(control: ControlBuffer) ?[]align(cmsg.algn) u8 {
-            const l = control.getHeader().len;
-            debug.assert(l >= cmsg.hdr.data_offset);
-            if (l == cmsg.hdr.data_offset) {
-                return null;
-            } else {
-                const ctrl = control.buffer[0..cmsg.alignment.forward(l)];
-                for (ctrl[l..]) |pad| { if (pad != 0) unreachable; }
-                return ctrl;
-            }
-        }
-
-        pub fn clear(control: ControlBuffer) void {
-            control.getHeader().len = cmsg.hdr.data_offset;
-            @memset(control.buffer[@sizeOf(cmsg.hdr)..], 0);
-        }
-
-        pub fn fromBuffer(buffer: []align(cmsg.algn) u8) ControlBuffer {
-            const hdr: *cmsg.hdr = @ptrCast(buffer.ptr);
-            // If these asserts fail, the beginning of the buffer
-            // was mutated after initialization or was not initialized correctly.
-            debug.assert(hdr.pad0 == 0);
-            debug.assert(hdr.pad1 == 0);
-            debug.assert(hdr.len >= cmsg.hdr.data_offset);
-            debug.assert(hdr.level == .socket);
-            debug.assert(hdr.@"type".socket == .rights);
-            return .{ .buffer = buffer };
-        }
-
-        pub fn init(buffer: []align(cmsg.algn) u8) ControlBuffer {
-            @memset(buffer, 0);
-            const hdr: *cmsg.hdr = @ptrCast(buffer.ptr);
-            hdr.* = .{
-                .len = cmsg.hdr.data_offset,
-                .level = .socket,
-                .@"type" = .{ .socket = .rights },
-            };
-            return .{ .buffer = buffer };
-        }
-
-        /// Returns necessary byte length to buffer a single control message
-        /// of at most `capacity` items.
-        ///
-        /// Due to end padding requirements,
-        /// the returned size may have a corresponding capacity
-        /// greater than what was requested.
-        pub fn sizeFromCapacity(comptime Item: type, capacity: usize) usize {
-            return cmsg.space(capacity * @sizeOf(Item));
-        }
-
-        pub fn capacityFromSize(comptime Item: type, size: usize) usize {
-            return @divFloor(
-                size - cmsg.hdr.data_offset,
-                @sizeOf(Item),
-            );
-        }
+    // TODO these are arbitrary defaults,
+    // in particular i think the max fds in one control send is defined by e.g. wayland somewhere
+    pub const InitOptions = struct {
+        send_capacity_minimum: usize = std.heap.page_size_min,
+        receive_capacity_minimum: usize = std.heap.page_size_min,
+        /// Minimum buffer size for receiving control data.
+        /// Linux documents that the maximum size of a single message of control data
+        /// can be found at `/proc/sys/net/core/optmem_max`.
+        control_capacity_minimum: usize = std.heap.page_size_min,
+        /// Minimum capacity of file descriptors to buffer until the next send.
+        fd_send_capacity_minimum: usize = 32,
+        /// Minimum capacity of file descriptors to buffer after receives
+        /// until they are consumed following the read.
+        fd_receive_capacity_minimum: usize = 32,
     };
+
+    pub const InitError = MirrorRing.CreateError || mem.Allocator.Error;
+
+    pub fn create(options: InitOptions) InitError!TransferQueue {
+        var buffers: TransferQueue = undefined;
+        try buffers.init(options);
+        return buffers;
+    }
+
+    /// Allocates with the global page allocator.
+    pub fn init(buffers: *TransferQueue, options: InitOptions) InitError!void {
+        // TODO bulk mmap?
+        const page_size = std.heap.pageSize();
+        buffers.send = try .create(ceilingMultiple(options.send_capacity_minimum, page_size));
+        errdefer buffers.send.destroy();
+        buffers.receive = try .create(ceilingMultiple(options.receive_capacity_minimum, page_size));
+        errdefer buffers.receive.destroy();
+
+        const fd_send_offset: usize = 0;
+        const fd_send_size = cmsg.space(options.fd_send_capacity_minimum * @sizeOf(system.fd_t));
+        const fd_receive_offset = mem.alignForward(usize, fd_send_offset + fd_send_size, @alignOf(system.fd_t));
+        const fd_receive_size = options.fd_receive_capacity_minimum * @sizeOf(system.fd_t);
+        const control_recv_offset = mem.alignForward(usize, fd_receive_offset + fd_receive_size, cmsg.algn);
+        const req_size = control_recv_offset + options.control_capacity_minimum;
+        // Want to ensure the control buffer extends to the very end of the last page
+        if (std.heap.page_size_min % cmsg.algn != 0) comptime unreachable;
+        const control_total_size = mem.alignForward(usize, req_size, page_size);
+
+        // TODO have not checked that this slices properly
+        const control: []align(std.heap.page_size_min) u8 = @as([*]align(std.heap.page_size_min) u8, @alignCast(std.heap.PageAllocator.map(
+            control_total_size,
+            .fromByteUnits(page_size),
+        ) orelse return error.OutOfMemory))[0..control_total_size];
+        errdefer std.heap.PageAllocator.unmap(control);
+        @memset(control, undefined);
+
+        if (fd_send_offset != 0) unreachable;
+        buffers.fd_send = .init(control[fd_send_offset..][0..fd_send_size]);
+        const fd_receive_buffer: []system.fd_t = @alignCast(mem.bytesAsSlice(system.fd_t, control[fd_receive_offset..][0..fd_receive_size]));
+        buffers.fd_receive = fd_receive_buffer[0..0];
+        buffers.fd_receive_capacity = fd_receive_buffer.len;
+        buffers.control = @alignCast(control[control_recv_offset..]);
+        if (!mem.isAligned(buffers.control.len, cmsg.algn)) unreachable;
+    }
+
+    pub fn deinit(buffers: *TransferQueue) void {
+        buffers.destroy();
+        buffers.* = undefined;
+    }
+
+    pub fn destroy(buffers: TransferQueue) void {
+        std.heap.PageAllocator.unmap(buffers.controlPages());
+        buffers.receive.free();
+        buffers.send.free();
+    }
+
+    pub fn receivedDataPeek(buffers: *const TransferQueue) []u8 {
+        return buffers.receive.readable();
+    }
+
+    /// Asserts that at least `size` bytes are buffered in the receive buffer.
+    pub fn receivedDataToss(buffers: *TransferQueue, size: usize) void {
+        @memset(buffers.receive.readable()[0..size], undefined);
+        buffers.receive.consume(size);
+        buffers.receive.resetIfEmpty();
+    }
+
+    /// Asserts that at least `size` bytes are buffered in the receive buffer.
+    pub fn receivedDataTossNoReset(buffers: *TransferQueue, size: usize) void {
+        @memset(buffers.receive.readable()[0..size], undefined);
+        buffers.receive.consume(size);
+    }
+
+    /// Asserts that at least `count` fds are buffered in `fd_receive`.
+    /// Prefer to batch this into one call after a series of parsed messages,
+    /// to avoid unnecessary repeated `memmove`s.
+    pub fn receivedFdsToss(buffers: *TransferQueue, count: usize) void {
+        if (count == buffers.fd_receive.len) {
+            @memset(buffers.fd_receive, undefined);
+            buffers.fd_receive.len = 0;
+        } else if (count < buffers.fd_receive.len) {
+            const new_len = buffers.fd_receive.len - count;
+            @memmove(buffers.fd_receive[0..new_len], buffers.fd_receive[count..]);
+            @memset(buffers.fd_receive[new_len..], undefined);
+            buffers.fd_receive.len = new_len;
+        } else {
+            unreachable;
+        }
+    }
+
+    pub fn receivedFdsAppend(buffers: *TransferQueue, fds: []const align(1) system.fd_t) (error{OutOfMemory})!void {
+        const cap = buffers.fd_receive_capacity;
+        const len = buffers.fd_receive.len;
+        if (cap - len >= fds.len) {
+            buffers.fd_receive.len += fds.len;
+            @memcpy(buffers.fd_receive[len..], fds);
+        } else {
+            return error.OutOfMemory;
+        }
+    }
+
+    /// Add new data to the send buffer to be sent.
+    pub fn sendDataAppend(buffers: *TransferQueue, data: []const u8) (error{OutOfMemory})!void {
+        const bufferable = buffers.send.writable();
+        if (bufferable.len >= data.len) {
+            if (buffers.send.publishWillOverflow(data.len)) {
+                @branchHint(.cold);
+                buffers.send.normalize();
+            }
+            @memcpy(bufferable[0..data.len], data);
+            buffers.send.publish(data.len);
+        } else {
+            return error.OutOfMemory;
+        }
+    }
+
+    /// Add new data to the send buffer to be sent.
+    ///
+    /// Overflows the ring buffer cursor after `maxInt(usize)` bytes of buffered data
+    /// (~4GB on 32-bit systems), if not resetting or the buffer is never empty for a reset.
+    pub fn sendDataAppendNoNormalize(buffers: *TransferQueue, data: []const u8) (error{OutOfMemory})!void {
+        const bufferable = buffers.send.writable();
+        if (bufferable.len >= data.len) {
+            @memcpy(bufferable[0..data.len], data);
+            buffers.send.publish(data.len);
+        } else {
+            return error.OutOfMemory;
+        }
+    }
+
+    pub fn sendDataWritable(buffers: TransferQueue) []u8 {
+        return buffers.send.writable();
+    }
+
+    /// Advance the send buffer end cursor by `size`,
+    /// marking the next `size` bytes of the writable send buffer slice
+    /// as new data to be sent.
+    ///
+    /// Asserts there was at least `size` bytes of space remaining in the send buffer.
+    pub fn sendDataPublish(buffers: *TransferQueue, size: usize) void {
+        if (buffers.send.space() <= size) unreachable;
+        if (buffers.send.publishWillOverflow(size)) {
+            @branchHint(.cold);
+            buffers.send.normalize();
+        }
+        buffers.send.publish(size);
+    }
+
+    /// Advance the send buffer end cursor by `size`,
+    /// marking the next `size` bytes of the writable send buffer slice
+    /// as new data to be sent.
+    ///
+    /// Asserts there was at least `size` bytes of space remaining in the send buffer.
+    ///
+    /// Overflows the ring buffer cursor after `maxInt(usize)` bytes of buffered data
+    /// (~4GB on 32-bit systems), if not resetting or the buffer is never empty for a reset.
+    pub fn sendDataPublishNoNormalize(buffers: *TransferQueue, size: usize) void {
+        if (buffers.send.space() <= size) unreachable;
+        buffers.send.publish(size);
+    }
+
+    pub fn controlPages(buffers: TransferQueue) []align(std.heap.page_size_min) u8 {
+        const page_size = std.heap.pageSize();
+        const start: [*]u8 = buffers.fd_send.buffer.ptr;
+        if (!mem.isAligned(@intFromPtr(start), page_size)) unreachable;
+        if (@intFromPtr(buffers.fd_receive.ptr) < @intFromPtr(start)) unreachable;
+        if (@intFromPtr(buffers.control.ptr) < @intFromPtr(buffers.fd_receive.ptr)) unreachable;
+        const end_addr: usize = @intFromPtr(buffers.control.ptr) + buffers.control.len;
+        if (!mem.isAligned(end_addr, page_size)) unreachable;
+        const len: usize = end_addr - @intFromPtr(start);
+        return @alignCast(start[0..len]);
+    }
+};
+
+/// A ring buffer kept on double-mapped pages,
+/// for which access past the buffer is wrapped by virtual addressing,
+/// allowing reads and writes to assume contiguity.
+pub const MirrorRing = struct {
+    buffer: [*]align(std.heap.page_size_min) u8,
+    capacity: usize,
+    head: usize,
+    tail: usize,
+
+    // TODO atomic variants
+
+    // TODO non-aliased halves as iovec variants
+
+    // TODO which if any fns should be inline
+
+    pub fn index(ring: MirrorRing, cursor: usize) usize {
+        if (ring.capacity & (ring.capacity - 1) != 0) unreachable;
+        return cursor & (ring.capacity - 1);
+    }
+
+    pub fn len(ring: MirrorRing) usize {
+        return ring.head - ring.tail;
+    }
+
+    pub fn space(ring: MirrorRing) usize {
+        return ring.capacity - ( ring.head - ring.tail );
+    }
+
+    pub fn readable(ring: MirrorRing) []u8 {
+        const read = ring.index(ring.tail);
+        const available = ring.len();
+        if (available > ring.capacity) unreachable;
+        return (ring.buffer + read)[0..available];
+    }
+
+    pub fn writable(ring: MirrorRing) []u8 {
+        const write = ring.index(ring.head);
+        const available = ring.space();
+        return (ring.buffer + write)[0..available];
+    }
+
+    pub fn consume(ring: *MirrorRing, size: usize) void {
+        if (ring.head - ring.tail < size) unreachable;
+        ring.tail += size;
+    }
+
+    /// It is unlikely, although technically possible
+    /// (after ~4GB of buffered data on 32-bit systems),
+    /// that the cursor may eventually integer overflow,
+    /// because it is advanced monotonically.
+    pub fn publish(ring: *MirrorRing, size: usize) void {
+        ring.head += size;
+        if (ring.head - ring.tail > ring.capacity) unreachable;
+    }
+
+    /// It is unlikely, although technically possible
+    /// (after ~4GB of buffered data on 32-bit systems),
+    /// that the cursor may eventually integer overflow,
+    /// because it is advanced monotonically.
+    pub fn publishCheckOverflow(ring: *MirrorRing, size: usize) (error{Overflow})!void {
+        ring.head = try std.math.add(@TypeOf(ring.head), ring.head, size);
+        if (ring.head - ring.tail > ring.capacity) unreachable;
+    }
+
+    /// Returns `true` if a publish of `size` would overflow the cursor.
+    ///
+    /// It is unlikely, although technically possible
+    /// (after ~4GB of buffered data on 32-bit systems),
+    /// that the cursor may eventually integer overflow,
+    /// because it is advanced monotonically.
+    pub fn publishWillOverflow(ring: MirrorRing, size: usize) bool {
+        return if (std.math.add(@TypeOf(ring.head), ring.head, size)) |_| false else |_| true;
+    }
+
+    /// Asserts the buffer is empty.
+    pub fn reset(ring: *MirrorRing) void {
+        if (ring.head - ring.tail != 0) unreachable;
+        ring.head = 0;
+        ring.tail = 0;
+    }
+
+    pub fn resetIfEmpty(ring: *MirrorRing) void {
+        const zero_if_empty = @as(usize, @intFromBool(ring.tail == ring.head)) -% 1;
+        ring.tail &= zero_if_empty;
+        ring.head &= zero_if_empty;
+    }
+
+    pub fn normalize(ring: *MirrorRing) void {
+        const l = ring.len();
+        ring.tail = ring.index(ring.tail);
+        ring.head = ring.tail + l;
+    }
+
+    pub const CreateError = error{
+        OutOfMemory,
+        SystemResources,
+        Unsupported,
+        Unexpected,
+    };
+
+    /// Directly mmap the needed pages (totaling double `capacity`).
+    /// Asserts `capacity` is a multiple of the page size.
+    pub fn create(capacity: usize) CreateError!MirrorRing {
+        // If the std concept of page size is removed, what is relevant to us here is simply
+        // the smallest piece of virtual memory that can be individually requested.
+        const page_size = std.heap.pageSize();
+        if (capacity % page_size != 0) unreachable;
+        // Should also already be implied by being a multiple of page size
+        if (capacity & (capacity - 1) != 0) unreachable;
+        switch (native_os) {
+            .linux => {
+                const fd = std.posix.memfd_create("ring", 0) catch |err| switch (err) {
+                    error.NameTooLong => unreachable,
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ProcessFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
+                    error.SystemFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
+                    error.SystemOutdated => return error.Unsupported, // TODO is possible on linux?
+                    error.Unexpected => return error.Unexpected,
+                };
+                defer closeFd(fd);
+                trunc: while (true) {
+                    switch (system.errno(system.ftruncate(fd, @intCast(capacity)))) {
+                        .SUCCESS => break :trunc,
+                        .INTR => continue :trunc,
+                        .INVAL => |e| return errnoBug(e),
+                        .FBIG => |e| return errnoBug(e),
+                        .IO => |e| return errnoBug(e), // TODO confirm
+                        .BADF => |e| return errnoBug(e),
+                        else => |e| return errnoBug(e),
+                    }
+                }
+                const buffer = std.posix.mmap(
+                    null,
+                    capacity*2,
+                    .{},
+                    .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+                    -1,
+                    0,
+                ) catch |err| switch (err) {
+                    error.AccessDenied => unreachable,
+                    error.LockedMemoryLimitExceeded => unreachable,
+                    error.MappingAlreadyExists => unreachable,
+                    error.MemoryMappingNotSupported => return error.Unsupported,
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.PermissionDenied => unreachable,
+                    error.ProcessFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
+                    error.SystemFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
+                    error.Unexpected => return error.Unexpected,
+                };
+                errdefer std.posix.munmap(buffer);
+                if (buffer.len != capacity*2) unreachable;
+                const former = std.posix.mmap(
+                    buffer.ptr,
+                    capacity,
+                    .{ .READ = true, .WRITE = true },
+                    .{ .TYPE = .SHARED, .FIXED = true },
+                    fd,
+                    0,
+                ) catch |err| switch (err) {
+                    error.AccessDenied => unreachable,
+                    error.LockedMemoryLimitExceeded => unreachable,
+                    error.MappingAlreadyExists => unreachable,
+                    error.MemoryMappingNotSupported => return error.Unsupported,
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.PermissionDenied => unreachable,
+                    error.ProcessFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
+                    error.SystemFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
+                    error.Unexpected => return error.Unexpected,
+                };
+                // mmapping the same fd and offset again
+                // has the page table for the latter virtual half
+                // address the same logical pages the former is set to.
+                const latter = std.posix.mmap(
+                    @alignCast(buffer.ptr + capacity),
+                    capacity,
+                    .{ .READ = true, .WRITE = true },
+                    .{ .TYPE = .SHARED, .FIXED = true },
+                    fd,
+                    0,
+                ) catch |err| switch (err) {
+                    error.AccessDenied => unreachable,
+                    error.LockedMemoryLimitExceeded => unreachable,
+                    error.MappingAlreadyExists => unreachable,
+                    error.MemoryMappingNotSupported => return error.Unsupported,
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.PermissionDenied => unreachable,
+                    error.ProcessFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
+                    error.SystemFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
+                    error.Unexpected => return error.Unexpected,
+                };
+                if (!std.meta.eql(buffer[0..capacity], former)) unreachable;
+                if (!std.meta.eql(buffer[capacity..][0..capacity], latter)) unreachable;
+                // TODO assert check that the halves actually mirror
+                @memset(buffer[0..capacity], undefined);
+                return .{
+                    .buffer = buffer.ptr,
+                    .capacity = capacity,
+                    .head = 0,
+                    .tail = 0,
+                };
+            },
+            else => |os| @compileError("unimplemented for target " ++ @tagName(os)),
+        }
+    }
+
+    pub fn destroy(ring: *MirrorRing) void {
+        ring.free();
+        ring.* = undefined;
+    }
+
+    pub fn free(ring: MirrorRing) void {
+        std.posix.munmap(ring.buffer[0..ring.capacity*2]);
+    }
 };
 
 pub const cmsg = struct {
@@ -668,9 +1178,11 @@ pub const cmsg = struct {
         level: Level,
         @"type": Type,
 
-        comptime { debug.assert(@sizeOf(hdr) == @sizeOf(system.cmsghdr)); }
-        comptime { debug.assert(@sizeOf(i32) == @sizeOf(c_int)
-                            and @alignOf(i32) == @alignOf(c_int)); }
+        comptime {
+            if (@sizeOf(hdr) != @sizeOf(system.cmsghdr)) unreachable;
+            if (@sizeOf(i32) != @sizeOf(c_int)) unreachable;
+            if (@alignOf(i32) != @alignOf(c_int)) unreachable;
+        }
 
         pub const Level = enum(i32) {
             socket = system.SOL.SOCKET,
@@ -678,7 +1190,7 @@ pub const cmsg = struct {
             _,
         };
 
-        pub const Type = packed union {
+        pub const Type = packed union(i32) {
             socket: Socket,
 
             pub const Socket = enum(i32) {
@@ -688,8 +1200,6 @@ pub const cmsg = struct {
                 // TODO others
             };
         };
-        comptime { debug.assert(@sizeOf(Type) == @sizeOf(i32)
-                            and @alignOf(Type) == @alignOf(i32)); }
 
         pub fn matchesFlags(h: cmsg.hdr, flags: Flags) bool {
             const level_int: i32 = @intFromEnum(@as(Level, flags));
@@ -717,7 +1227,7 @@ pub const cmsg = struct {
     }
 
     pub inline fn nexthdr(mhdr: *system.msghdr, chdr: *cmsg.hdr) ?*cmsg.hdr {
-        debug.assert(@as(usize, @intFromPtr(chdr)) >= @as(usize, @intFromPtr(mhdr.control.?)));
+        if (@as(usize, @intFromPtr(chdr)) < @as(usize, @intFromPtr(mhdr.control.?))) unreachable;
         const next: usize = @as(usize, @intFromPtr(chdr)) + alignment.forward(chdr.len);
         const end: usize = @as(usize, mhdr.control.?) + mhdr.controllen;
         return if (next + @sizeOf(cmsg.hdr) <= end) @ptrFromInt(next) else null;
@@ -760,6 +1270,14 @@ pub const cmsg = struct {
     };
 };
 
+pub fn closeFd(fd: system.fd_t) void {
+    switch (system.errno(system.close(fd))) {
+        .SUCCESS, .INTR => {},
+        .BADF => unreachable,
+        else => unreachable,
+    }
+}
+
 fn errnoBug(err: system.E) error{Unexpected} {
     // TODO not correct way to check for debug mode?
     if (comptime @import("builtin").mode == .Debug) {
@@ -773,10 +1291,15 @@ fn MuslOnlyPadding(endian: std.builtin.Endian) type {
     return if (@import("builtin").abi.isMusl() and @sizeOf(usize) == 8 and native_endian == endian) u32 else u0;
 }
 
+inline fn ceilingMultiple(x: anytype, n: @TypeOf(x)) @TypeOf(x) {
+    if (x < 0) comptime unreachable;
+    if (n < 0) comptime unreachable;
+    return @divFloor(x+n-1, n) * n;
+}
+
 const system = posix.system;
 const native_os = builtin.os.tag;
 const native_endian = builtin.target.cpu.arch.endian();
-pub const closeFd = root.closeFd;
 
 const Io = std.Io;
 const posix = std.posix;

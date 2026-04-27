@@ -1,188 +1,7 @@
 pub const ipc = @import("ipc.zig");
 pub const wayland = @import("wayland.zig");
 
-/// A ring buffer kept on double-mapped pages,
-/// for which access past the buffer is wrapped by virtual addressing,
-/// allowing reads and writes to assume contiguity.
-pub const MirrorRing = struct {
-    buffer: [*]align(std.heap.page_size_min) u8,
-    capacity: usize,
-    head: usize,
-    tail: usize,
-
-    // TODO atomic variants
-
-    // TODO non-aliased halves as iovec variants
-
-    // TODO which if any fns should be inline
-
-    pub fn index(ring: MirrorRing, cursor: usize) usize {
-        assert(ring.capacity & (ring.capacity - 1) == 0);
-        return cursor & (ring.capacity - 1);
-    }
-
-    pub fn len(ring: MirrorRing) usize {
-        return ring.head - ring.tail;
-    }
-
-    pub fn empty(ring: MirrorRing) usize {
-        return ring.capacity - ( ring.head - ring.tail );
-    }
-
-    pub fn readable(ring: MirrorRing) []u8 {
-        const read = ring.index(ring.tail);
-        const available = ring.len();
-        assert(available <= ring.capacity);
-        return ring.buffer[read..][0..available];
-    }
-
-    pub fn writable(ring: MirrorRing) []u8 {
-        const write = ring.index(ring.head);
-        const available = ring.empty();
-        return ring.buffer[write..][0..available];
-    }
-
-    pub fn consume(ring: *MirrorRing, size: usize) void {
-        ring.tail += size;
-        assert(ring.tail <= ring.head);
-    }
-
-    pub fn publish(ring: *MirrorRing, size: usize) void {
-        ring.head += size;
-        assert(ring.head - ring.tail <= ring.capacity);
-    }
-
-    /// For long-running buffers on <64-bit systems,
-    /// call this where possible to avoid integer overflow
-    /// (because the cursors increase monotonically).
-    ///
-    /// Asserts the buffer is empty.
-    pub fn reset(ring: *MirrorRing) void {
-        assert(ring.head - ring.tail == 0);
-        ring.head = 0;
-        ring.tail = 0;
-    }
-
-    pub const CreateError = error{
-        OutOfMemory,
-        SystemResources,
-        Unsupported,
-        Unexpected,
-    };
-
-    /// Directly mmap the needed pages (totaling double `capacity`).
-    /// Asserts `capacity` is a multiple of the page size.
-    pub fn create(capacity: usize) CreateError!MirrorRing {
-        // If the std concept of page size is removed, what is relevant to us here is simply
-        // the smallest piece of virtual memory that can be individually requested.
-        const page_size = std.heap.pageSize();
-        assert(capacity % page_size == 0);
-        // Should also already be implied by being a multiple of page size
-        assert(capacity & (capacity - 1) == 0);
-        switch (native_os) {
-            .linux => {
-                const fd = std.posix.memfd_create("ring", 0) catch |err| switch (err) {
-                    error.NameTooLong => unreachable,
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.ProcessFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
-                    error.SystemFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
-                    error.Unsupported => return error.SystemOutdated, // TODO is possible on linux?
-                    error.Unexpected => return error.Unexpected,
-                };
-                defer closeFd(fd);
-                system.ftruncate(fd, capacity);
-                const buffer = std.posix.mmap(
-                    null,
-                    capacity*2,
-                    .{},
-                    .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
-                    -1,
-                    0,
-                ) catch |err| switch (err) {
-                    error.AccessDenied => unreachable,
-                    error.LockedMemoryLimitExceeded => unreachable,
-                    error.MappingAlreadyExists => unreachable,
-                    error.MemoryMappingNotSupported => return error.Unsupported,
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.PermissionDenied => unreachable,
-                    error.ProcessFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
-                    error.SystemFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
-                    error.Unexpected => return error.Unexpected,
-                };
-                errdefer std.posix.munmap(buffer);
-                assert(buffer.len == capacity*2);
-                const former = std.posix.mmap(
-                    buffer.ptr,
-                    capacity,
-                    .{ .READ = true, .WRITE = true },
-                    .{ .TYPE = .SHARED, .FIXED = true },
-                    fd,
-                    0,
-                ) catch |err| switch (err) {
-                    error.AccessDenied => unreachable,
-                    error.LockedMemoryLimitExceeded => unreachable,
-                    error.MappingAlreadyExists => unreachable,
-                    error.MemoryMappingNotSupported => return error.Unsupported,
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.PermissionDenied => unreachable,
-                    error.ProcessFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
-                    error.SystemFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
-                    error.Unexpected => return error.Unexpected,
-                };
-                // mmapping the same fd and offset again
-                // has the page table for the latter virtual half
-                // address the same logical pages the former is set to.
-                const latter = std.posix.mmap(
-                    buffer.ptr + capacity,
-                    capacity,
-                    .{ .READ = true, .WRITE = true },
-                    .{ .TYPE = .SHARED, .FIXED = true },
-                    fd,
-                    0,
-                ) catch |err| switch (err) {
-                    error.AccessDenied => unreachable,
-                    error.LockedMemoryLimitExceeded => unreachable,
-                    error.MappingAlreadyExists => unreachable,
-                    error.MemoryMappingNotSupported => return error.Unsupported,
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.PermissionDenied => unreachable,
-                    error.ProcessFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
-                    error.SystemFdQuotaExceeded => return error.SystemResources, // TODO should this just also be OOM?
-                    error.Unexpected => return error.Unexpected,
-                };
-                assert(std.meta.eql(buffer[0..capacity], former));
-                assert(std.meta.eql(buffer[capacity][0..capacity], latter));
-                // TODO assert check that the halves actually mirror
-                return .{
-                    .buffer = buffer.ptr,
-                    .capacity = capacity,
-                    .head = 0,
-                    .tail = 0,
-                };
-            },
-            else => |os| @compileError("unimplemented for target " ++ @tagName(os)),
-        }
-    }
-
-    pub fn destroy(ring: *MirrorRing) void {
-        ring.free();
-        ring.* = undefined;
-    }
-
-    pub fn free(ring: MirrorRing) void {
-        std.posix.munmap(ring.buffer[0..ring.capacity*2]);
-    }
-};
-
-pub fn closeFd(fd: system.fd_t) void {
-    switch (system.errno(system.close(fd))) {
-        .SUCCESS, .INTR => {},
-        .BADF => unreachable,
-        else => unreachable,
-    }
-}
-
-// TODO delete all below
+// TODO delete/move all below
 
 //pub const X11 = struct {
 //    pub const Linked = @import("X11/Linked.zig");
@@ -423,6 +242,12 @@ fn isNamespace(name: []const u8, qualifiers: []const []const u8) bool {
             else break false
         ) break false;
     } else true;
+}
+
+inline fn ceilingMultiple(x: anytype, n: @TypeOf(x)) @TypeOf(x) {
+    if (x < 0) comptime unreachable;
+    if (n < 0) comptime unreachable;
+    return @divFloor(x+n-1, n) * n;
 }
 
 const native_os = builtin.os.tag;
