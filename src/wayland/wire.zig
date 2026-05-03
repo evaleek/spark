@@ -26,26 +26,27 @@ comptime { assert(@sizeOf(Header) == 8); }
 
 // TODO test of all message structs that written bytes == payloadSize
 
-/// For an object which is a child of a protocol in `protocols`,
-/// write a request message to `writer`.
+/// Writes the in-stream representation of the message to `writer`.
 ///
-/// This function ignores file descriptor arguments of the message.
-/// The caller is responsible for transferring these.
-pub fn writeMessage(
+/// This function ignores file descriptor arguments of the message, which
+/// the caller is responsible for transferring with or before the stream flush
+/// which delivers this message data.
+pub fn writeRequestAll(
     writer: *Io.Writer,
-    object: anytype,
-    message: @TypeOf(object).Request.Message,
+    comptime interface: protocol.Interface,
+    object: interface.GetObject(),
+    message: interface.GetObject().Request.Message,
 ) Io.Writer.Error!void {
     switch (message) {
-        inline else => |request, request_tag| {
+        inline else => |args, request| {
             try writer.writeStruct(Header{
                 .object = object.id,
                 .info = .{
-                    .operation = @intFromEnum(request_tag),
-                    .size = @sizeOf(Header) + payloadSize(request),
+                    .operation = @intFromEnum(request),
+                    .size = @sizeOf(Header) + payloadSize(args),
                 },
             }, endian);
-            try writeArgsAll(writer, request);
+            try writeArgsAll(writer, args);
         }
     }
 }
@@ -154,7 +155,7 @@ pub fn eventFromPayload(
         @compileError("invalidly exhaustive opcode enum " ++ @typeName(Operation));
     if (operation_info.tag_type != u16)
         @compileError("invalid backing integer " ++ @typeName(operation_info.tag_type) ++ " for opcode enum " ++ @typeName(Operation));
-    switch (@as(Operation, @bitCast(opcode))) {
+    switch (@as(Operation, @enumFromInt(opcode))) {
         inline else => |event| {
             const Args = @FieldType(Object.Event.Message, @tagName(event));
             const fd_count: usize = comptime expectedAncillaryCount(Args);
