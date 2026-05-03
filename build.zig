@@ -91,7 +91,7 @@ pub fn build(b: *std.Build) !void {
     const run_wayland_scanner = b.addRunArtifact(wayland_scanner_exe);
     for (wayland_xml_src) |path| run_wayland_scanner.addFileArg(path);
     run_wayland_scanner.addPrefixedFileArg("-a", b.path("src/wayland/protocol_common.zig"));
-    mod.addAnonymousImport("wayland_protocol", .{
+    mod.addAnonymousImport(b.fmt("{s}_wayland_protocol", .{zon_name}), .{
         .root_source_file = run_wayland_scanner.addPrefixedOutputFileArg(
             "-o",
             "wayland_protocol.zig",

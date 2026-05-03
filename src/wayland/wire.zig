@@ -1,3 +1,5 @@
+pub const endian: std.builtin.Endian = .native;
+
 pub const object_id = struct {
     pub const @"null": u32 = 0;
     /// The implicit ID of `wl_display`
@@ -19,6 +21,8 @@ pub const Header = extern struct {
     },
 };
 comptime { assert(@sizeOf(Header) == 8); }
+
+// TODO message parsing below ideally needs ring buffer awareness
 
 // TODO test of all message structs that written bytes == payloadSize
 
@@ -53,23 +57,22 @@ pub fn writeMessage(
 /// The caller is responsible for transferring file descriptor args
 /// with `SCM_RIGHTS` ancillary to these bytes (in no particular order).
 pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
-    const native_endian = @import("builtin").target.cpu.arch.endian(); // TODO is Endian decl in 0.16
     const Args = @TypeOf(args);
     inline for (@typeInfo(Args).@"struct".fields) |field| {
         const arg = @field(args, field.name);
         switch (field.@"type") {
-            inline i32, u32 => |T| try writer.writeInt(T, arg, native_endian),
+            inline i32, u32 => |T| try writer.writeInt(T, arg, endian),
             Fixed => try writer.writeInt(
                 @typeInfo(Fixed).@"struct".backing_integer.?,
                 @bitCast(arg),
-                native_endian,
+                endian,
             ),
             String => try writeStringArg(writer, arg),
             ?String => {
                 if (arg) |string| {
                     try writeStringArg(writer, string);
                 } else {
-                    try writer.writeInt(u32, 0, native_endian);
+                    try writer.writeInt(u32, 0, endian);
                 }
             },
             protocol.Interface => @compileError("TODO"),
@@ -82,8 +85,8 @@ pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
                     debug.assert(std.mem.eql(u8, "id", info.fields[2].name));
                 }
                 try writeStringArg(writer, arg.name);
-                try writer.writeInt(u32, arg.version, native_endian);
-                try writer.writeInt(u32, arg.id, native_endian);
+                try writer.writeInt(u32, arg.version, endian);
+                try writer.writeInt(u32, arg.id, endian);
             },
             else => {
                 const Object = @TypeOf(arg);
@@ -92,7 +95,7 @@ pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
                     ( (info == .@"struct" and info.@"struct".layout == .@"packed") or info == .@"enum" )
                     and @bitSizeOf(Object) == 32
                 ) {
-                    try writer.writeInt(u32, @bitCast(arg), native_endian);
+                    try writer.writeInt(u32, @bitCast(arg), endian);
                 } else {
                     const is_optional = info == .optional;
                     const ObjectNoOptional = if (is_optional) info.optional.child else Object;
@@ -100,13 +103,13 @@ pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
                         if (is_optional) {
                             if (arg) |object| {
                                 assert(object.id != 0);
-                                try writer.writeInt(u32, object.id, native_endian);
+                                try writer.writeInt(u32, object.id, endian);
                             } else {
-                                try writer.writeInt(u32, 0, native_endian);
+                                try writer.writeInt(u32, 0, endian);
                             }
                         } else {
                             assert(arg.id != 0);
-                            try writer.writeInt(u32, arg.id, native_endian);
+                            try writer.writeInt(u32, arg.id, endian);
                         }
                     } else {
                         @compileError(comptimePrint(
@@ -123,59 +126,44 @@ pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
 }
 
 pub fn writeStringArg(writer: *Io.Writer, string: String) Io.Writer.Error!void {
-    const native_endian = @import("builtin").target.cpu.arch.endian(); // TODO is Endian decl in 0.16
     const string_with_terminator: []const u8 = string.ptr[0..string.len];
     assert(string_with_terminator[string_with_terminator.len-1] == 0);
-    try writer.writeInt(u32, string.len, native_endian);
+    try writer.writeInt(u32, string.len, endian);
     try writer.writeAll(string_with_terminator);
     try writer.splatByteAll(undefined, diffToMultiple(string.len, 4));
 }
 
 pub fn writeArrayArg(writer: *Io.Writer, array: Array) Io.Writer.Error!void {
-    const native_endian = @import("builtin").target.cpu.arch.endian(); // TODO is Endian decl in 0.16
-    try writer.writeInt(u32, array.size, native_endian);
+    try writer.writeInt(u32, array.size, endian);
     try writer.writeAll(array.ptr[0..array.size]);
     try writer.splatByteAll(undefined, diffToMultiple(array.size, 4));
 }
 
-/// `Message` is a Request or Event `.Message` tagged union from `protocol`.
-/// Asserts `ancillary` is the expected number of file descriptors from protocol.
-/// Returns error if payload is not the expected number of bytes.
+/// For a protocol `interface` and buffered raw message, return the parsed message.
 /// Strings and arrays are valid only for the lifetime of `payload`.
-pub fn messageFromPayload(
-    comptime Message: type,
-    op: u16,
-    //op: @typeInfo(Message).@"union".tag_type.?,
+pub fn eventFromPayload(
+    comptime interface: protocol.Interface,
+    opcode: u16,
     payload: []const u8,
-    ancillary: []const FD,
-) MessageMalformation!Message {
-    const Op = @typeInfo(Message).@"union".tag_type.?;
-    if (@typeInfo(Op).@"enum".is_exhaustive) {
-        const operation: Op = enums.fromInt(Op, op)
-            orelse return error.UnsupportedOperation;
-        switch (operation) {
-            inline else => |tag| {
-                const args = try argsFromPayload(
-                    @FieldType(Message, @tagName(tag)),
-                    payload,
-                    ancillary,
-                );
-                return @unionInit(Message, @tagName(tag), args);
-            },
-        }
-    } else {
-        const operation: Op = @enumFromInt(op);
-        switch (operation) {
-            _ => return error.UnsupportedOperation,
-            inline else => |tag| {
-                const args = try argsFromPayload(
-                    @FieldType(Message, @tagName(tag)),
-                    payload,
-                    ancillary,
-                );
-                return @unionInit(Message, @tagName(tag), args);
-            },
-        }
+    fd_queue: []const Fd,
+) MessageMalformation!interface.GetObject().Event.Message {
+    const Object: type = comptime interface.GetObject();
+    const Operation = Object.Event;
+    const operation_info = @typeInfo(Operation).@"enum";
+    if (operation_info.is_exhaustive)
+        @compileError("invalidly exhaustive opcode enum " ++ @typeName(Operation));
+    if (operation_info.tag_type != u16)
+        @compileError("invalid backing integer " ++ @typeName(operation_info.tag_type) ++ " for opcode enum " ++ @typeName(Operation));
+    switch (@as(Operation, @bitCast(opcode))) {
+        inline else => |event| {
+            const Args = @FieldType(Object.Event.Message, @tagName(event));
+            const fd_count: usize = comptime expectedAncillaryCount(Args);
+            if (fd_queue.len < fd_count) return error.AncillaryUnderflow;
+            // TODO consider force inlining argsFromPayload if codegen is bad here
+            const args = try argsFromPayload(Args, payload, fd_queue[0..fd_count]);
+            return @unionInit(Object.Event.Message, @tagName(event), args);
+        },
+        _ => return error.UnsupportedOperation,
     }
 }
 
@@ -189,11 +177,11 @@ pub fn messageFromPayload(
 pub fn argsFromPayload(
     comptime Args: type,
     payload: []const u8,
-    ancillary: []const FD,
+    ancillary: []const Fd,
 ) PayloadMalformation!Args {
     assert(ancillary.len == comptime expectedAncillaryCount(Args));
     var remaining: []const u8 = payload;
-    var remaining_fds: []const FD = ancillary;
+    var remaining_fds: []const Fd = ancillary;
     var args: Args = undefined;
     inline for (@typeInfo(Args).@"struct".fields) |field| {
         switch (field.@"type") {
@@ -235,7 +223,7 @@ pub fn argsFromPayload(
                     ( (info == .@"struct" and info.@"struct".layout == .@"packed") or info == .@"enum" )
                     and @bitSizeOf(Object) == 32
                 ) {
-                    comptime { if (info == .@"enum") debug.assert(!info.@"enum".is_exhaustive); }
+                    comptime { if (info == .@"enum" and info.@"enum".is_exhaustive) unreachable; }
                     @field(args, field.name) = mem.bytesToValue(Object, remaining[0..@sizeOf(Object)]);
                     remaining = try payloadNext(remaining, @sizeOf(Object));
                 } else {
@@ -279,44 +267,20 @@ pub const MessageMalformation = error{
     /// The message may be invalidly formatted
     /// or the client may have been built with an outdated protocol.
     UnsupportedOperation,
+    /// The resolved message args contained more file descriptors
+    /// than there were present in the passed file descriptor buffer.
+    AncillaryUnderflow,
 } || PayloadMalformation;
 
 pub const PayloadMalformation = error{
     /// Reached the end of the payload buffer expecting more args
     PayloadOverflow,
     /// Parsed all args before reaching the end of the payload buffer
+    /// (expects the passed payload slice to be exactly to the end of the message)
     PayloadUnderflow,
     /// A string or object not typed as optional was passed as NULL
     InvalidOptional,
 };
-
-pub fn mapInterfaceName(name: []const u8) ?protocol.AnyObject {
-    const map: std.StaticStringMap(protocol.AnyObject) = comptime .initComptime(&kvs: {
-        const count = count: {
-            var c: usize = 0;
-            for (@typeInfo(protocol.AnyObject).@"union".fields) |field| {
-                const Object = field.type;
-                c += @typeInfo(Object).@"enum".fields.len;
-            }
-            break :count c;
-        };
-        var kvs: [count]struct { []const u8, protocol.AnyObject } = undefined;
-        var i: usize = 0;
-        for (@typeInfo(protocol.AnyObject).@"union".fields) |field| {
-            const Object = field.type;
-            for (@typeInfo(Object).@"enum".fields) |field_inner| {
-                kvs[i] = .{
-                    ( if (Object.prefix) |prefix| prefix else "" ) ++ field_inner.name,
-                    @unionInit(protocol.AnyObject, field.name, @enumFromInt(field_inner.value)),
-                };
-                i += 1;
-            }
-        }
-        debug.assert(i == kvs.len);
-        break :kvs kvs;
-    });
-    return map.get(name);
-}
 
 pub fn printArgs(writer: *std.Io.Writer, args: anytype) std.Io.Writer.Error!void {
     const Args = @TypeOf(args);
@@ -478,37 +442,14 @@ pub fn expectedAncillaryCount(comptime Args: type) usize {
 }
 
 pub fn isProtocolInterface(comptime Object: type) bool {
-    if (Object == protocol.Interface or Object == protocol.Interface.New)
+    if (Object == protocol.AnyObject or Object == protocol.AnyObject.New) {
         return true;
-    return forall: for (@typeInfo(protocol).@"struct".decls) |decl_outer| {
-        const container = @field(protocol, decl_outer.name);
-        switch (@typeInfo(container)) {
-            .@"struct" => |protocol_info| {
-                for (protocol_info.decls) |decl_inner| {
-                    const Interface = @field(container, decl_inner.name);
-                    if (@TypeOf(Interface) != type) continue;
-                    switch (@typeInfo(Interface)) {
-                        .@"struct" => |interface_info| {
-                            if (
-                                interface_info.fields.len == 1 and
-                                mem.eql(u8, "id", interface_info.fields[0].name) and
-                                interface_info.fields[0].@"type" == u32 and
-                                @hasDecl(Interface, "New") and
-                                @hasField(Interface.New, "id") and
-                                @FieldType(Interface.New, "id") == u32
-                            ) {
-                                if (Object == Interface or Object == Interface.New) {
-                                    break :forall true;
-                                }
-                            }
-                        },
-                        else => {},
-                    }
-                }
-            },
-            else => {},
-        }
-    } else false;
+    }
+    inline for (comptime std.meta.tags(protocol.Interface)) |iface| {
+        const Interface = iface.GetObject();
+        if (Object == Interface or Object == Interface.New) return true;
+    }
+    return false;
 }
 
 fn payloadNext(buffer: []const u8, forward: usize) error{PayloadOverflow}![]const u8 {
@@ -526,8 +467,7 @@ inline fn ceilingMultiple(x: anytype, n: @TypeOf(x)) @TypeOf(x) {
     return @divFloor(x+n-1, n) * n;
 }
 
-/// Returns the difference of `x`
-/// to the least multiple of `n` greater than or equal to `x`.
+/// Returns the difference of `x` to the least multiple of `n` greater than or equal to `x`.
 inline fn diffToMultiple(x: anytype, n: @TypeOf(x)) @TypeOf(x) {
     assert(x >= 0);
     assert(n >= 0);
@@ -556,17 +496,18 @@ test diffToMultiple {
     try testing.expectEqual(3, diffToMultiple(9, 4));
 }
 
-pub const protocol = @import("wayland_protocol");
+pub const protocol = @import("spark_wayland_protocol");
 pub const Fixed = protocol.Fixed;
 pub const String = protocol.String;
 pub const Array = protocol.Array;
 pub const File = protocol.File;
 
-pub const FD = @import("std").posix.fd_t;
-
-/// Wayland wire protocol follows the host system endianness
-/// TODO is std.builtin.Endian.native in 0.16
-pub const endian = @import("builtin").target.cpu.arch.endian();
+pub const Fd = std.posix.fd_t;
+comptime {
+    const info = @typeInfo(protocol.File).@"struct";
+    if (info.fields.len != 1) unreachable;
+    if (info.fields[0].type != Fd) unreachable;
+}
 
 const assert = debug.assert;
 const comptimePrint = std.fmt.comptimePrint;

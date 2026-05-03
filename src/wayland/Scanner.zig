@@ -16,7 +16,7 @@ var main_allocator = switch (@import("builtin").mode) {
     else => std.heap.ArenaAllocator.init(std.heap.page_allocator),
 };
 
-pub fn main() !void {
+pub fn main(ini: std.process.Init.Minimal) !void {
     const allocator = main_allocator.allocator();
     defer switch (@import("builtin").mode) {
         .Debug => switch (main_allocator.deinit()) {
@@ -37,7 +37,7 @@ pub fn main() !void {
     var out_file_path: ?[:0]const u8 = null;
     var app_file_path: ?[:0]const u8 = null;
     defer in_file_list.deinit(allocator);
-    var arg_iterator: std.process.ArgIterator = try .initWithAllocator(allocator);
+    var arg_iterator: std.process.Args.Iterator = try .initAllocator(ini.args, allocator);
     defer arg_iterator.deinit();
     // The first argument is the program invokation
     const first = arg_iterator.next();
@@ -66,15 +66,14 @@ pub fn main() !void {
         }
     }
 
-    // TODO fs -> Io.Dir when std.Io.File has .writer()
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
 
-    const out_file: std.fs.File =
-        if (out_file_path) |path| cwd.createFile(path, .{})
+    const out_file: std.Io.File =
+        if (out_file_path) |path| cwd.createFile(io, path, .{})
             catch return error.OutputFileOpenFailure
         else .stdout();
-    var writer = out_file.writer(&write_buffer);
-    defer { if (out_file_path) |_| out_file.close(); }
+    var writer = out_file.writer(io, &write_buffer);
+    defer { if (out_file_path) |_| out_file.close(io); }
 
     var scanner: Scanner = try .init(allocator);
     defer scanner.deinit(allocator);
@@ -110,8 +109,8 @@ pub fn main() !void {
         try protocols_list.appendSlice(allocator, protocols);
     } else for (in_file_list.items) |path| {
         read_buffer = undefined;
-        const file = try cwd.openFile(path, .{ .mode = .read_only });
-        defer file.close();
+        const file = try cwd.openFile(io, path, .{ .mode = .read_only });
+        defer file.close(io);
         var reader = file.reader(io, &read_buffer);
         scanner.newStream();
         const protocols = scanner.parse(allocator, &reader.interface) catch |err| switch (err) {
@@ -168,8 +167,8 @@ pub fn main() !void {
     });
 
     if (app_file_path) |path| {
-        if (cwd.openFile(path, .{ .mode = .read_only })) |file| {
-            defer file.close();
+        if (cwd.openFile(io, path, .{ .mode = .read_only })) |file| {
+            defer file.close(io);
             read_buffer = undefined;
             var reader = file.reader(io, &read_buffer);
             if (append: {
@@ -195,7 +194,7 @@ pub const ObjectID = u32;
 pub const SourceFormat = struct {
     indent: []const u8 = "    ",
     top_comment: ?[]const u8 = null,
-    generic_interface_type_name: []const u8 = "Interface",
+    generic_interface_type_name: []const u8 = "AnyObject",
     fixed_symbol: []const u8 = "Fixed",
     string_symbol: []const u8 = "String",
     array_symbol: []const u8 = "Array",
@@ -229,6 +228,89 @@ pub fn writeProtocolSource(
         try writer.writeAll(str);
         try writer.splatByteAll('\n', 2);
     }
+
+    try writer.writeAll("pub const Protocol = enum {\n");
+    for (protocols) |protocol| {
+        try writer.splatBytesAll(format.indent, 1);
+        try writer.writeAll(protocol.name);
+        try writer.writeAll(",\n");
+    }
+    try writer.writeByte('\n');
+    try writer.splatBytesAll(format.indent, 1);
+    try writer.writeAll("pub fn GetContainer(comptime protocol: Protocol) type {\n");
+    try writer.splatBytesAll(format.indent, 2);
+    try writer.writeAll("return switch (protocol) {\n");
+    for (protocols) |protocol| {
+        try writer.splatBytesAll(format.indent, 3);
+        try writer.writeByte('.');
+        try writer.writeAll(protocol.name);
+        try writer.writeAll(" => ");
+        try writer.writeAll(protocol.name);
+        try writer.writeAll(",\n");
+    }
+    try writer.splatBytesAll(format.indent, 2);
+    try writer.writeAll("};\n");
+    try writer.splatBytesAll(format.indent, 1);
+    try writer.writeAll("}\n");
+    try writer.writeAll("};\n\n");
+
+    const interface_prefixes: []?[]const u8 = try allocator.alloc(?[]const u8, protocols.len);
+    defer allocator.free(interface_prefixes);
+    for (protocols, interface_prefixes) |protocol, *interface_prefix| {
+        interface_prefix.* = find: {
+            if (protocol.interfaces.len <= 1) break :find null;
+            var idx: usize = 0;
+            while (true) : (idx += 1) {
+                if (idx >= protocol.interfaces[0].name.len)
+                    break :find if (idx!=0) protocol.interfaces[0].name[0..idx] else null;
+                const c = protocol.interfaces[0].name[idx];
+                for (protocol.interfaces[1..]) |interface| {
+                    if (idx < interface.name.len) {
+                        if (interface.name[idx] != c)
+                            break :find if (idx!=0) interface.name[0..idx] else null;
+                    } else {
+                        break :find if (idx!=0) interface.name[0..idx] else null;
+                    }
+                }
+            }
+        };
+    }
+
+    try writer.writeAll("pub const Interface = enum {\n");
+    for (protocols) |protocol| {
+        for (protocol.interfaces) |interface| {
+            try writer.splatBytesAll(format.indent, 1);
+            try writer.writeAll(interface.name);
+            try writer.writeAll(",\n");
+        }
+    }
+    try writer.writeByte('\n');
+    try writer.splatBytesAll(format.indent, 1);
+    try writer.writeAll("pub fn GetObject(comptime interface: Interface) type {\n");
+    try writer.splatBytesAll(format.indent, 2);
+    try writer.writeAll("return switch (interface) {\n");
+    for (protocols, interface_prefixes) |protocol, interface_prefix| {
+        for (protocol.interfaces) |interface| {
+            const interface_container_name = try upperName(
+                allocator,
+                if (interface_prefix) |prefix| interface.name[prefix.len..] else interface.name,
+            );
+            defer allocator.free(interface_container_name);
+            try writer.splatBytesAll(format.indent, 3);
+            try writer.writeByte('.');
+            try writer.writeAll(interface.name);
+            try writer.writeAll(" => ");
+            try writeNameDecollided(allocator, writer, protocol.name);
+            try writer.writeByte('.');
+            try writer.writeAll(interface_container_name);
+            try writer.writeAll(",\n");
+        }
+    }
+    try writer.splatBytesAll(format.indent, 2);
+    try writer.writeAll("};\n");
+    try writer.splatBytesAll(format.indent, 1);
+    try writer.writeAll("}\n");
+    try writer.writeAll("};\n\n");
 
     const has_generic_objects = scan: for (protocols) |protocol| {
         for (protocol.interfaces) |interface| {
@@ -266,14 +348,15 @@ pub fn writeProtocolSource(
         },
     );
 
+    // TODO come back and figure out what this was even here for
     const has_wl_object = scan: for (protocols) |protocol| {
         for (protocol.interfaces) |interface| {
             for (interface.objects) |object| {
                 switch (object) {
                     inline .request, .event => |obj| {
                         for (obj.args) |arg| {
-                            if (arg.interface) |ifc| {
-                                if (mem.eql(u8, "wl_object", ifc))
+                            if (arg.interface) |iface| {
+                                if (mem.eql(u8, "wl_object", iface))
                                     break :scan true;
                             }
                         }
@@ -304,42 +387,7 @@ pub fn writeProtocolSource(
         try writer.writeByte('\n');
     }
 
-    try writer.writeAll("pub const Protocol = enum {\n");
-    for (protocols) |protocol| {
-        try writer.splatBytesAll(format.indent, 1);
-        try writer.writeAll(protocol.name);
-        try writer.writeAll(",\n");
-    }
-    try writer.writeByte('\n');
-    try writer.splatBytesAll(format.indent, 1);
-    try writer.writeAll("pub fn ToProtocol(protocol: Protocol) type {\n");
-    try writer.splatBytesAll(format.indent, 2);
-    try writer.writeAll("return switch (protocol) {\n");
-    for (protocols) |protocol| {
-        try writer.splatBytesAll(format.indent, 3);
-        try writer.writeByte('.');
-        try writer.writeAll(protocol.name);
-        try writer.writeAll(" => ");
-        try writer.writeAll(protocol.name);
-        try writer.writeAll(",\n");
-    }
-    try writer.splatBytesAll(format.indent, 2);
-    try writer.writeAll("};\n");
-    try writer.splatBytesAll(format.indent, 1);
-    try writer.writeAll("}\n");
-    try writer.writeAll("};\n\n");
-
-    try writer.writeAll("pub const AnyObject = union(Protocol) {\n");
-    for (protocols) |protocol| {
-        try writer.splatBytesAll(format.indent, 1);
-        try writer.writeAll(protocol.name);
-        try writer.writeAll(": ");
-        try writer.writeAll(protocol.name);
-        try writer.writeAll(".Object,\n");
-    }
-    try writer.writeAll("};\n\n");
-
-    for (protocols, 0..) |protocol, protocol_index| {
+    for (protocols, interface_prefixes, 0..) |protocol, interface_prefix, protocol_index| {
         if (protocol.copyright) |copyright| {
             var line_iter = mem.splitScalar(u8, copyright, '\n');
             while (line_iter.next()) |line| {
@@ -349,70 +397,9 @@ pub fn writeProtocolSource(
             }
         }
 
-        const interface_prefix: ?[]const u8 = find_prefix: {
-            if (protocol.interfaces.len <= 1) break :find_prefix null;
-            var idx: usize = 0;
-            while (true) : (idx += 1) {
-                if (idx >= protocol.interfaces[0].name.len)
-                    break :find_prefix if (idx!=0) protocol.interfaces[0].name[0..idx] else null;
-                const c = protocol.interfaces[0].name[idx];
-                for (protocol.interfaces[1..]) |interface| {
-                    if (idx < interface.name.len) {
-                        if (interface.name[idx] != c)
-                            break :find_prefix if (idx!=0) interface.name[0..idx] else null;
-                    } else {
-                        break :find_prefix if (idx!=0) interface.name[0..idx] else null;
-                    }
-                }
-            }
-        };
-
         try writer.writeAll("pub const ");
         try writeNameDecollided(allocator, writer, protocol.name);
         try writer.writeAll(" = struct {\n");
-
-        try writer.splatBytesAll(format.indent, 1);
-        try writer.writeAll("pub const Object = enum {\n");
-
-        try writer.splatBytesAll(format.indent, 2);
-        try writer.writeAll("pub const prefix: ?[]const u8 = ");
-        if (interface_prefix) |prefix| {
-            try writer.writeByte('"');
-            try writer.writeAll(prefix);
-            try writer.writeByte('"');
-        } else {
-            try writer.writeAll("null");
-        }
-        try writer.writeAll(";\n\n");
-
-        for (protocol.interfaces) |interface| {
-            try writer.splatBytesAll(format.indent, 2);
-            try writer.writeAll( if (interface_prefix) |prefix| interface.name[prefix.len..] else interface.name );
-            try writer.writeAll(",\n");
-        }
-        if (protocol.interfaces.len > 0) {
-            try writer.writeByte('\n');
-            try writer.splatBytesAll(format.indent, 2);
-            try writer.writeAll("pub fn ToInterface(object: Object) type {\n");
-            try writer.splatBytesAll(format.indent, 3);
-            try writer.writeAll("return switch (object) {\n");
-            for (protocol.interfaces) |interface| {
-                const name = if (interface_prefix) |prefix| interface.name[prefix.len..] else interface.name;
-                const upper_name = try upperName(allocator, name);
-                defer allocator.free(upper_name);
-                try writer.splatBytesAll(format.indent, 4);
-                try writer.writeByte('.');
-                try writer.writeAll(name);
-                try writer.writeAll(" => ");
-                try writer.writeAll(upper_name);
-                try writer.writeAll(",\n");
-            }
-            try writer.splatBytesAll(format.indent, 3);
-            try writer.writeAll("};\n");
-            try writer.splatBytesAll(format.indent, 2);
-            try writer.writeAll("}\n");
-        }
-        try writer.writeAll("};\n\n");
 
         if (has_wl_object and has_wayland_protocol and mem.eql(u8, "wayland", protocol.name)) {
             for (wl_object_src) |line| {
