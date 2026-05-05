@@ -77,6 +77,7 @@ pub fn build(b: *std.Build) !void {
     // TODO consider conditioning on a wayland build flag
     const wayland_xml_src = [_]std.Build.LazyPath{
         b.path("src/wayland/protocol/wayland.xml"),
+        b.path("src/wayland/protocol/xdg-shell.xml"),
     };
     const wayland_scanner_mod = b.createModule(.{
         .root_source_file = b.path("src/wayland/Scanner.zig"),
