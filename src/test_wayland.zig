@@ -55,8 +55,25 @@ fn testDisplayConnection(display: *Display) !void {
     var object_map: Object.Map = .empty;
     var registry_proxy: RegistryProxy = .empty;
 
-    object_map.bind(.display, try allocObjectId(&next_id_counter));
+    const surface_width: u32 = 200;
+    const surface_height: u32 = 200;
+    const surface_buffer_format: wire.protocol.wayland.Shm.Format.Code = .xrgb8888;
+    const surface_buffer_pixel_stride: u32 = 4; // TODO function for format -> pixel size
+    const surface_buffer_stride: u32 = surface_width * surface_buffer_pixel_stride;
+    const surface_buffer_size: u32 = surface_buffer_stride * surface_height;
+    const surface_buffer_count: u32 = 1;
+    const shm_size: u32 = surface_buffer_size * surface_buffer_count;
+    const shm_file: ipc.AnonymousFile = try .createMemFd("wl_shm", shm_size);
+    defer shm_file.closeMemFd();
+    const shm_data = try shm_file.map(0, shm_size);
+    if (shm_data.len != shm_size) unreachable;
+    defer ipc.AnonymousFile.unmap(shm_data);
+    const surface_buffers: [surface_buffer_count]*[surface_buffer_size]u8 = .{
+        shm_data[0..surface_buffer_size],
+        //shm_data[surface_buffer_size..][0..surface_buffer_size],
+    };
 
+    object_map.bind(.display, try allocObjectId(&next_id_counter));
     {
         const registry_id = try allocObjectId(&next_id_counter);
         object_map.bind(.registry, registry_id);
@@ -97,7 +114,13 @@ fn testDisplayConnection(display: *Display) !void {
                     },
                 },
                 .compositor => unreachable,
+                .xdg_wm_base => unreachable,
+                .surface => unreachable,
+                .xdg_surface => unreachable,
+                .xdg_toplevel => unreachable,
                 .shm => unreachable,
+                .shm_pool => unreachable,
+                .buffer_1, .buffer_2 => unreachable,
             }
             display.tossBuffered(header.info.size);
         }
@@ -121,6 +144,119 @@ fn testDisplayConnection(display: *Display) !void {
         }});
     }
     {
+        const xdg_wm_id = try allocObjectId(&next_id_counter);
+        object_map.bind(.xdg_wm_base, xdg_wm_id);
+        const registry_entry = registry_proxy.get(.xdg_wm_base)
+            orelse return error.MissingWaylandGlobals;
+        try display.pushRequest(.wl_registry, .{ .id = object_map.getId(.registry).? }, .{ .bind = .{
+            .name = registry_entry.name,
+            .id = .{
+                .name = .fromSlice(@tagName(.xdg_wm_base)),
+                // TODO consume actual version somewhere
+                .version = @min(registry_entry.version, wire.protocol.xdg_shell.WmBase.version),
+                .id = xdg_wm_id,
+            },
+        }});
+    }
+    {
+        const surface_id = try allocObjectId(&next_id_counter);
+        object_map.bind(.surface, surface_id);
+        try display.pushRequest(.wl_compositor, .{ .id = object_map.getId(.compositor).? }, .{ .create_surface = .{
+            .id = .{ .id = surface_id },
+        }});
+    }
+    {
+        const xdg_surface_id = try allocObjectId(&next_id_counter);
+        object_map.bind(.xdg_surface, xdg_surface_id);
+        try display.pushRequest(.xdg_wm_base, .{ .id = object_map.getId(.xdg_wm_base).? }, .{ .get_xdg_surface = .{
+            .id = .{ .id = xdg_surface_id },
+            .surface = .{ .id = object_map.getId(.surface).? },
+        }});
+    }
+    {
+        const xdg_toplevel_id = try allocObjectId(&next_id_counter);
+        object_map.bind(.xdg_toplevel, xdg_toplevel_id);
+        try display.pushRequest(.xdg_surface, .{ .id = object_map.getId(.xdg_surface).? }, .{ .get_toplevel = .{
+            .id = .{ .id = xdg_toplevel_id },
+        }});
+    }
+    try display.pushRequest(.wl_surface, .{ .id = object_map.getId(.surface).? }, .{ .commit = .{}});
+    try display.flush();
+
+    var configure_acc: ConfigureState = .empty;
+    var last_configure: ConfigureState = .empty;
+
+    {
+        var init_configure: bool = true;
+        while (init_configure) {
+            const header, const payload = try display.peekNextEventRaw();
+            if (header.info.size % 4 != 0) return error.InvalidMessageSize;
+            const object = object_map.getObject(header.object) orelse return error.UnmappedObject;
+            switch (object) {
+                .display => try dispatchDisplayEvent(
+                    &object_map,
+                    try display.parseEvent(.wl_display, header, payload),
+                ),
+                .registry => try dispatchRegistryEvent(
+                    &registry_proxy,
+                    try display.parseEvent(.wl_registry, header, payload),
+                    true,
+                ),
+                .init_sync => unreachable, // TODO should be error
+                .compositor => unreachable, // no events
+                .xdg_wm_base => switch (try display.parseEvent(.xdg_wm_base, header, payload)) {
+                    .ping => |ping| {
+                        log.info("got ping (0x{x})", .{ping.serial});
+                        try display.pushRequest(.xdg_wm_base, .{ .id = object_map.getId(.xdg_wm_base).? }, .{ .pong = .{
+                            .serial = ping.serial,
+                        }});
+                        try display.flush(); // TODO unbatched
+                        log.info("sent pong (0x{x})", .{ping.serial});
+                    },
+                },
+                .surface => switch (try display.parseEvent(.wl_surface, header, payload)) {
+                    inline else => |args, event| log.info("wl_surface.{t}: {f}", .{ event, wire.formatAlt(args) }),
+                },
+                .xdg_surface => switch (try display.parseEvent(.xdg_surface, header, payload)) {
+                    .configure => |configure| {
+                        log.info("got configure (0x{x})", .{configure.serial});
+                        if (!configure_acc.isComplete()) log.warn("xdg_surface.configure with incomplete state", .{});
+                        last_configure = configure_acc;
+                        configure_acc = .empty;
+
+                        try display.pushRequest(.xdg_surface, .{ .id = object_map.getId(.xdg_surface).? }, .{ .ack_configure = .{
+                            .serial = configure.serial,
+                        }});
+                        try display.flush(); // TODO unbatched
+                        log.info("acked configure (0x{x})", .{configure.serial});
+                        if (init_configure == true) {
+                            init_configure = false;
+                        } else {
+                            unreachable;
+                        }
+                    },
+                },
+                .xdg_toplevel => switch (try display.parseEvent(.xdg_toplevel, header, payload)) {
+                    // TODO
+                    .configure => |configure| {
+                        if (configure_acc.size == null) {
+                            configure_acc.size = .{ configure.width, configure.height };
+                        } else {
+                            log.err("xdg_toplevel.configure state collision", .{});
+                        }
+                    },
+                    inline else => |args, event| log.info("xdg_toplevel.{t}: {f}", .{ event, wire.formatAlt(args) }),
+                },
+                .shm => unreachable,
+                .shm_pool => unreachable,
+                .buffer_1, .buffer_2 => unreachable,
+            }
+            display.tossBuffered(header.info.size);
+        }
+    }
+    log.info("received initial configure", .{});
+
+    {
         const shm_id = try allocObjectId(&next_id_counter);
         object_map.bind(.shm, shm_id);
         const registry_entry = registry_proxy.get(.wl_shm)
@@ -135,7 +271,55 @@ fn testDisplayConnection(display: *Display) !void {
             },
         }});
     }
+    // Wayland compositors are required to support `.argb8888` and `.xrgb8888`,
+    // so we pick the format without checking for support first
+    // and let the display send the fatal error if it's missing.
+    {
+        const shm_pool_id = try allocObjectId(&next_id_counter);
+        object_map.bind(.shm_pool, shm_pool_id);
+        try display.pushRequest(.wl_shm, .{ .id = object_map.getId(.shm).? }, .{ .create_pool = .{
+            .id = .{ .id = shm_pool_id },
+            .fd = .{ .descriptor = shm_file.fd },
+            .size = @intCast(shm_size),
+        }});
+    }
+    {
+        const buffer_1_id = try allocObjectId(&next_id_counter);
+        //const buffer_2_id = try allocObjectId(&next_id_counter);
+        object_map.bind(.buffer_1, buffer_1_id);
+        try display.pushRequest(.wl_shm_pool, .{ .id = object_map.getId(.shm_pool).? }, .{ .create_buffer = .{
+            .id = .{ .id = buffer_1_id },
+            .offset = 0,
+            .width = surface_width,
+            .height = surface_height,
+            .stride = surface_buffer_stride,
+            .format = surface_buffer_format,
+        }});
+        //object_map.bind(.buffer_2, buffer_2_id);
+        //try display.pushRequest(.wl_shm_pool, .{ .id = object_map.getId(.shm_pool).? }, .{ .create_buffer = .{
+        //    .id = .{ .id = buffer_2_id },
+        //    .offset = surface_buffer_size,
+        //    .width = surface_width,
+        //    .height = surface_height,
+        //    .stride = surface_buffer_stride,
+        //    .format = surface_buffer_format,
+        //}});
+    }
+    try display.pushRequest(.wl_surface, .{ .id = object_map.getId(.surface).? }, .{ .attach = .{
+        .buffer = .{ .id = object_map.getId(.buffer_1).? },
+        .x = 0,
+        .y = 0,
+    }});
+    try display.pushRequest(.wl_surface, .{ .id = object_map.getId(.surface).? }, .{ .damage_buffer = .{
+        .x = 0,
+        .y = 0,
+        .width = std.math.maxInt(i32),
+        .height = std.math.maxInt(i32),
+    }});
+    try display.pushRequest(.wl_surface, .{ .id = object_map.getId(.surface).? }, .{ .commit = .{}});
     try display.flush();
+
+    _ = surface_buffers;
 
     while (true) {
         const header, const payload = try display.peekNextEventRaw();
@@ -151,11 +335,57 @@ fn testDisplayConnection(display: *Display) !void {
                 try display.parseEvent(.wl_registry, header, payload),
                 true,
             ),
-            .init_sync => unreachable,
-            .compositor => unreachable,
-            .shm => switch (try display.parseEvent(.wl_shm, header, payload)) {
-                .format => |format| log.info("wl_shm offers format: {t}", .{format.format}),
+            .init_sync => unreachable, // TODO should be error
+            .compositor => unreachable, // no events
+            .xdg_wm_base => switch (try display.parseEvent(.xdg_wm_base, header, payload)) {
+                .ping => |ping| {
+                    log.info("got ping (0x{x})", .{ping.serial});
+                    try display.pushRequest(.xdg_wm_base, .{ .id = object_map.getId(.xdg_wm_base).? }, .{ .pong = .{
+                        .serial = ping.serial,
+                    }});
+                    try display.flush(); // TODO unbatched
+                    log.info("sent pong (0x{x})", .{ping.serial});
+                },
             },
+            .surface => switch (try display.parseEvent(.wl_surface, header, payload)) {
+                inline else => |args, event| log.info("wl_surface.{t}: {f}", .{ event, wire.formatAlt(args) }),
+            },
+            .xdg_surface => switch (try display.parseEvent(.xdg_surface, header, payload)) {
+                .configure => |configure| {
+                    log.info("got configure (0x{x})", .{configure.serial});
+                    if (!configure_acc.isComplete()) log.warn("xdg_surface.configure with incomplete state", .{});
+                    last_configure = configure_acc;
+                    configure_acc = .empty;
+
+                    try display.pushRequest(.xdg_surface, .{ .id = object_map.getId(.xdg_surface).? }, .{ .ack_configure = .{
+                        .serial = configure.serial,
+                    }});
+                    try display.flush(); // TODO unbatched
+                    log.info("acked configure (0x{x})", .{configure.serial});
+                },
+            },
+            .xdg_toplevel => switch (try display.parseEvent(.xdg_toplevel, header, payload)) {
+                // TODO
+                .configure => |configure| {
+                    if (configure_acc.size == null) {
+                        configure_acc.size = .{ configure.width, configure.height };
+                    } else {
+                        log.err("xdg_toplevel.configure state collision", .{});
+                    }
+                },
+                inline else => |args, event| log.info("xdg_toplevel.{t}: {f}", .{ event, wire.formatAlt(args) }),
+            },
+            .shm => switch (try display.parseEvent(.wl_shm, header, payload)) {
+                .format => |format| log.debug("wl_shm offers format: {t}", .{format.format}),
+            },
+            .shm_pool => unreachable, // no events
+            .buffer_1 => switch (try display.parseEvent(.wl_buffer, header, payload)) {
+                .release => log.info("buffer_1.release", .{}),
+            },
+            .buffer_2 => unreachable,
+            //.buffer_2 => switch (try display.parseEvent(.wl_buffer, header, payload)) {
+            //    .release => log.info("buffer_2.release", .{}),
+            //},
         }
         display.tossBuffered(header.info.size);
     }
@@ -229,19 +459,39 @@ fn dispatchRegistryEvent(
                     log.info("wl_display::global_remove {t} ({d})", .{ removed_global, remove.name });
                 }
             } else {
-                log.err("unmapped wl_display::global_remove name {d}", .{remove.name});
+                log.err("unmapped wl_display::global_remove on name {d}", .{remove.name});
             }
             if (need_all_globals) return error.LostGlobal;
         },
     }
 }
 
+const ConfigureState = struct {
+    size: ?[2]i32,
+
+    pub const empty: ConfigureState = .{
+        .size = null,
+    };
+
+    pub fn isComplete(state: ConfigureState) bool {
+        if (state.size == null) return false;
+        return true;
+    }
+};
+
 const Object = enum {
     display,
     registry,
     init_sync,
     compositor,
+    xdg_wm_base,
+    surface,
+    xdg_surface,
+    xdg_toplevel,
     shm,
+    shm_pool,
+    buffer_1,
+    buffer_2,
 
     pub fn toInterface(object: Object) wire.protocol.Interface {
         return switch (object) {
@@ -249,7 +499,13 @@ const Object = enum {
             .registry => .wl_registry,
             .init_sync => .wl_callback,
             .compositor => .wl_compositor,
+            .xdg_wm_base => .xdg_wm_base,
+            .surface => .wl_surface,
+            .xdg_surface => .xdg_surface,
+            .xdg_toplevel => .xdg_toplevel,
             .shm => .wl_shm,
+            .shm_pool => .wl_shm_pool,
+            .buffer_1, .buffer_2 => .wl_buffer,
         };
     }
 
@@ -262,6 +518,7 @@ const RegistryProxy = spark.wayland.RegistryProxy(RegistryGlobal);
 const RegistryGlobal = Subset(wire.protocol.Interface, &.{
     .wl_compositor,
     .wl_shm,
+    .xdg_wm_base,
 });
 fn Subset(comptime E: type, comptime subset: []const E) type {
     const info = @typeInfo(E).@"enum";
@@ -402,12 +659,20 @@ const Display = struct {
         header: wire.Header,
         payload: []const u8,
     ) wire.MessageMalformation!interface.GetObject().Event.Message {
-        const event = try wire.eventFromPayload(
+        const event = wire.eventFromPayload(
             interface,
             header.info.operation,
             payload,
             display.transfer_queue.fd_receive,
-        );
+        ) catch |err| {
+            std.log.err("{t} parsing {t} event {d} ({d}B)", .{
+                err,
+                interface,
+                header.info.operation,
+                header.info.size,
+            });
+            return err;
+        };
         switch (event) {
             inline else => |args| {
                 const fds_count = comptime wire.expectedAncillaryCount(@TypeOf(args));

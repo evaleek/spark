@@ -26,6 +26,12 @@ comptime { assert(@sizeOf(Header) == 8); }
 
 // TODO test of all message structs that written bytes == payloadSize
 
+// TODO whole file needs better, more readable ways to iterate through args
+// and see more clearly what the protocol types are
+// without having to do all of this type reflection to verify everything.
+//
+// something like an argInfo() struct that validates and simplifies all in one
+
 /// Writes the in-stream representation of the message to `writer`.
 ///
 /// This function ignores file descriptor arguments of the message, which
