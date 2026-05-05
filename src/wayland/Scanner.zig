@@ -604,12 +604,13 @@ pub fn writeProtocolSource(
                         }
 
                         for (obj.args) |arg| {
-                            if (arg.summary) |summary| {
-                                try writer.splatBytesAll(format.indent, 3);
-                                try writer.writeAll("/// ");
-                                try writer.writeAll(summary);
-                                try writer.writeByte('\n');
-                            }
+                            try writeTagDescriptionSource(
+                                writer,
+                                arg.summary,
+                                arg.description,
+                                format.indent,
+                                3,
+                            );
 
                             try writer.splatBytesAll(format.indent, 3);
                             try writeNameDecollided(allocator, writer, arg.name);
@@ -672,11 +673,17 @@ pub fn writeProtocolSource(
                                             } else {
                                                 const parent_protocol_name: []const u8 = try find_parent: {
                                                     for (protocols) |p| {
-                                                        for (protocol.interfaces) |i| {
+                                                        for (p.interfaces) |i| {
                                                             if (mem.eql(u8, interface_name, i.name))
                                                                 break :find_parent p.name;
                                                         }
                                                     }
+                                                    std.log.err("no interface matching {s}.{s}.{s} \"{s}\"", .{
+                                                        interface.name,
+                                                        obj.name,
+                                                        arg.name,
+                                                        interface_name,
+                                                    });
                                                     break :find_parent error.ProtocolInvalid;
                                                 };
 
@@ -797,12 +804,13 @@ pub fn writeEnumSource(
 
     if (!@"enum".bitfield) {
         for (@"enum".entries) |entry| {
-            if (entry.summary) |summary| {
-                try writer.splatBytesAll(indent, indentation+1);
-                try writer.writeAll("/// ");
-                try writer.writeAll(summary);
-                try writer.writeByte('\n');
-            }
+            try writeTagDescriptionSource(
+                writer,
+                entry.summary,
+                entry.description,
+                indent,
+                indentation+1,
+            );
             try writer.splatBytesAll(indent, indentation+1);
             try writeNameDecollided(allocator, writer, entry.name);
             try writer.writeAll(" = ");
@@ -918,12 +926,13 @@ pub fn writeEnumSource(
         if (invalid_entries_list.items.len != 0) try writer.writeByte('\n');
         for (invalid_entries_list.items, 0..) |item, idx| {
             const entry, const matches_list = item;
-            if (entry.summary) |summary| {
-                try writer.splatBytesAll(indent, indentation+1);
-                try writer.writeAll("/// ");
-                try writer.writeAll(summary);
-                try writer.writeByte('\n');
-            }
+            try writeTagDescriptionSource(
+                writer,
+                entry.summary,
+                entry.description,
+                indent,
+                indentation+1,
+            );
             try writer.splatBytesAll(indent, indentation+1);
             try writer.writeAll("pub const ");
             try writeNameDecollided(allocator, writer, entry.name);
@@ -960,7 +969,14 @@ pub fn writeTagDescriptionSource(
         if (short) |description| {
             try writer.splatBytesAll(indent, indentation);
             try writer.writeAll("/// ");
-            try writer.writeAll(description);
+            // TODO need validation on all strings that become comments, this is quick fix
+            for (description) |char| {
+                if (char != '\n') {
+                    try writer.writeByte(char);
+                } else {
+                    try writer.writeByte(' ');
+                }
+            }
             try writer.writeByte('\n');
         }
 
@@ -973,7 +989,8 @@ pub fn writeTagDescriptionSource(
             var line_iter = mem.splitScalar(u8, description, '\n');
             while (line_iter.next()) |line| {
                 try writer.splatBytesAll(indent, indentation);
-                try writer.writeAll("/// ");
+                try writer.writeAll("///");
+                if (line.len > 0) try writer.writeByte(' ');
                 try writer.writeAll(line);
                 try writer.writeByte('\n');
             }
@@ -1014,119 +1031,120 @@ pub const SourceInvalidError = enum {
 };
 
 pub fn logSourceInvalidError(scanner: Scanner, comptime logFn: anytype, file_path: []const u8) void {
+    const line = scanner.line + 1;
     if (scanner.source_invalid_err) |err| {
         switch (err) {
             .broken_tag => logFn(
                 "{s}:{d}:{d}: source ends in unclosed tag",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .empty_tag_name => logFn(
                 "{s}:{d}:{d}: expected a tag name, found \'>\'",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .unsupported_tag => logFn(
                 "{s}:{d}:{d}: unsupported tag name \'{s}\'",
-                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items }
+                .{ file_path, line, scanner.column, scanner.tag_name_buffer.items }
             ),
             .clobber => logFn(
                 "{s}:{d}:{d}: double declaration of attribute or description",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .invalid_attributes => logFn(
                 "{s}:{d}:{d}: invalid attributes for tag <{s}>",
-                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
+                .{ file_path, line, scanner.column, scanner.tag_name_buffer.items },
             ),
             .invalid_name => logFn(
                 "{s}:{d}:{d}: invalid {s} name (expected ^[a-z_][a-z0-9_]*$)",
-                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
+                .{ file_path, line, scanner.column, scanner.tag_name_buffer.items },
             ),
             .mismatched_tag_close => logFn(
                 "{s}:{d}:{d}: mismatched \'<{s}>\' closing tag",
-                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
+                .{ file_path, line, scanner.column, scanner.tag_name_buffer.items },
             ),
             .unvalued_attribute => logFn(
                 "{s}:{d}:{d}: attribute \'{s}\' has no value",
-                .{ file_path, scanner.line, scanner.column, scanner.attribute_name_buffer.items },
+                .{ file_path, line, scanner.column, scanner.attribute_name_buffer.items },
             ),
             .invalid_forward_slash => logFn(
                 "{s}:{d}:{d}: expected \'>\' after \'/\', found \'{c}\'",
-                .{ file_path, scanner.line, scanner.column, scanner.last_byte.? },
+                .{ file_path, line, scanner.column, scanner.last_byte.? },
             ),
             .invalid_attribute_name_char => logFn(
                 "{s}:{d}:{d}: invalid character \'{c}\' in attribute name",
-                .{ file_path, scanner.line, scanner.column, scanner.last_byte.? },
+                .{ file_path, line, scanner.column, scanner.last_byte.? },
             ),
             .double_open_bracket => logFn(
                 "{s}:{d}:{d}: encountered \'<\' while parsing tag",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .invalid_before_attribute_value => logFn(
                 "{s}:{d}:{d}: expected start of attribute value, found \'{c}\'",
-                .{ file_path, scanner.line, scanner.column, scanner.last_byte.? },
+                .{ file_path, line, scanner.column, scanner.last_byte.? },
             ),
             .equals_before_attribute_name => logFn(
                 "{s}:{d}:{d}: expected attribute name, found \'=\'",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .invalid_declaration_question_mark => logFn(
                 "{s}:{d}:{d}: invalid token \'?{c}\' in declaration tag",
-                .{ file_path, scanner.line, scanner.column, scanner.last_byte.? },
+                .{ file_path, line, scanner.column, scanner.last_byte.? },
             ),
             .double_declaration => logFn(
                 "{s}:{d}:{d}: encountered second XML declaration",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .invalid_declaration_name => logFn(
                 "{s}:{d}:{d}: expected declaration tag name \'{s}\', found \'{s}\'",
-                .{ file_path, scanner.line, scanner.column, XMLDeclaration.tag_name, scanner.tag_name_buffer.items },
+                .{ file_path, line, scanner.column, XMLDeclaration.tag_name, scanner.tag_name_buffer.items },
             ),
             .invalid_declaration_attributes => logFn(
                 "{s}:{d}:{d}: invalid attributes for \'<?xml?>\' tag",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .invalid_non_self_closing => logFn(
                 "{s}:{d}:{d}: <{s}> is only supported as a self-closing tag",
-                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
+                .{ file_path, line, scanner.column, scanner.tag_name_buffer.items },
             ),
             .invalid_self_closing => logFn(
                 "{s}:{d}:{d}: <{s}/> is unsupported as a self-closing tag",
-                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
+                .{ file_path, line, scanner.column, scanner.tag_name_buffer.items },
             ),
             .doctype_unsupported => logFn(
                 "{s}:{d}:{d}: <!DOCTYPE> is unsupported",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .non_root_protocol => logFn(
                 "{s}:{d}:{d}: protocol tag must only appear at root level",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .interface_not_protocol_child => logFn(
                 "{s}:{d}:{d}: <interface> tag must appear as child of <protocol>",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .interface_child_not => logFn(
                 "{s}:{d}:{d}: <{s}> tag must appear as child of <interface>",
-                .{ file_path, scanner.line, scanner.column, scanner.tag_name_buffer.items },
+                .{ file_path, line, scanner.column, scanner.tag_name_buffer.items },
             ),
             .invalid_arg_parent => logFn(
                 "{s}:{d}:{d}: <arg> tag must appear as child of <request> or <event>",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .invalid_entry_parent => logFn(
                 "{s}:{d}:{d}: <entry> tag must appear as child of <enum>",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .invalid_description_parent => logFn(
                 "{s}:{d}:{d}: unsupported parent of <description> tag",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .invalid_copyright_parent => logFn(
                 "{s}:{d}:{d}: unsupported parent of <copyright> tag",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .invalid_entry_value => logFn(
                 "{s}:{d}:{d}: <entry/> value is not a valid integer",
-                .{ file_path, scanner.line, scanner.column },
+                .{ file_path, line, scanner.column },
             ),
             .missing_attribute_at_final => logFn(
                 "{s}: uncaught missing attributes after parsing",
@@ -1136,7 +1154,7 @@ pub fn logSourceInvalidError(scanner: Scanner, comptime logFn: anytype, file_pat
     } else {
         logFn(
             "{s}:{d}:{d}: unspecified error (seeing this is a bug)",
-            .{ file_path, scanner.line, scanner.column },
+            .{ file_path, line, scanner.column },
         );
     }
 }
@@ -1812,6 +1830,7 @@ fn pushEmptyElement(
                     .name = name.?,
                     .value = value.?,
                     .summary = summary,
+                    .description = null,
                     .since = since,
                     .deprecated_since = deprecated_since,
                 });
@@ -1923,6 +1942,7 @@ fn pushEmptyElement(
                         .interface = interface,
                         .allow_null = allow_null,
                         .summary = summary,
+                        .description = null,
                         .@"enum" = @"enum",
                     });
                 },
@@ -2040,6 +2060,10 @@ fn pushEmptyElement(
                         const last: *Interface.Parsing = &interfaces[interfaces.len-1];
                         if (last.description_short == null) {
                             last.description_short = description_short;
+                        } else if (std.mem.eql(u8, last.description_short.?, description_short)) {
+                            // Allow double summary declarations if they are the same string
+                            // TODO handle better
+                            allocator.free(description_short);
                         } else {
                             scanner.source_invalid_err = .clobber;
                             return error.InvalidWaylandXML;
@@ -2069,13 +2093,62 @@ fn pushEmptyElement(
                         );
                         if (last.description_short == null) {
                             last.description_short = description_short;
+                        } else if (std.mem.eql(u8, last.description_short.?, description_short)) {
+                            // Allow double summary declarations if they are the same string
+                            // TODO handle better
+                            allocator.free(description_short);
                         } else {
                             scanner.source_invalid_err = .clobber;
                             return error.InvalidWaylandXML;
                         }
                     },
 
-                    .protocol, .arg, .entry, .copyright, .description => {
+                    inline .arg, .entry => |val_obj| {
+                        const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                        const last_interface: Interface.Parsing = interfaces[interfaces.len-1];
+                        const last_interface_child = last_interface.objects.items[last_interface.objects.items.len-1];
+                        switch (val_obj) {
+                            .arg => {
+                                switch (last_interface_child) {
+                                    inline .request, .event => |obj| {
+                                        const last: *Arg = &obj.args.items[obj.args.items.len-1];
+                                        if (last.summary == null) {
+                                            last.summary = description_short;
+                                        } else if (std.mem.eql(u8, last.summary.?, description_short)) {
+                                            // Allow double summary declarations if they are the same string
+                                            // TODO handle better
+                                            allocator.free(description_short);
+                                        } else {
+                                            scanner.source_invalid_err = .clobber;
+                                            return error.InvalidWaylandXML;
+                                        }
+                                    },
+                                    else => unreachable,
+                                }
+                            },
+                            .entry => {
+                                switch (last_interface_child) {
+                                    .@"enum" => |obj| {
+                                        const last: *Entry = &obj.entries.items[obj.entries.items.len-1];
+                                        if (last.summary == null) {
+                                            last.summary = description_short;
+                                        } else if (std.mem.eql(u8, last.summary.?, description_short)) {
+                                            // Allow double summary declarations if they are the same string
+                                            // TODO handle better
+                                            allocator.free(description_short);
+                                        } else {
+                                            scanner.source_invalid_err = .clobber;
+                                            return error.InvalidWaylandXML;
+                                        }
+                                    },
+                                    else => unreachable,
+                                }
+                            },
+                            else => comptime unreachable,
+                        }
+                    },
+
+                    .protocol, .copyright, .description => {
                         scanner.source_invalid_err = .invalid_description_parent;
                         return error.InvalidWaylandXML;
                     },
@@ -2274,6 +2347,10 @@ fn pushStartElement(
                         const last: *Interface.Parsing = &interfaces[interfaces.len-1];
                         if (last.description_short == null) {
                             last.description_short = description_short;
+                        } else if (std.mem.eql(u8, last.description_short.?, description_short)) {
+                            // Allow double summary declarations if they are the same string
+                            // TODO handle better
+                            allocator.free(description_short);
                         } else {
                             scanner.source_invalid_err = .clobber;
                             return error.InvalidWaylandXML;
@@ -2304,9 +2381,58 @@ fn pushStartElement(
 
                         if (last.description_short == null) {
                             last.description_short = description_short;
+                        } else if (std.mem.eql(u8, last.description_short.?, description_short)) {
+                            // Allow double summary declarations if they are the same string
+                            // TODO handle better
+                            allocator.free(description_short);
                         } else {
                             scanner.source_invalid_err = .clobber;
                             return error.InvalidWaylandXML;
+                        }
+                    },
+
+                    inline .arg, .entry => |val_obj| {
+                        const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                        const last_interface: Interface.Parsing = interfaces[interfaces.len-1];
+                        const last_interface_child = last_interface.objects.items[last_interface.objects.items.len-1];
+                        switch (val_obj) {
+                            .arg => {
+                                switch (last_interface_child) {
+                                    inline .request, .event => |obj| {
+                                        const last: *Arg = &obj.args.items[obj.args.items.len-1];
+                                        if (last.summary == null) {
+                                            last.summary = description_short;
+                                        } else if (std.mem.eql(u8, last.summary.?, description_short)) {
+                                            // Allow double summary declarations if they are the same string
+                                            // TODO handle better
+                                            allocator.free(description_short);
+                                        } else {
+                                            scanner.source_invalid_err = .clobber;
+                                            return error.InvalidWaylandXML;
+                                        }
+                                    },
+                                    else => unreachable,
+                                }
+                            },
+                            .entry => {
+                                switch (last_interface_child) {
+                                    .@"enum" => |obj| {
+                                        const last: *Entry = &obj.entries.items[obj.entries.items.len-1];
+                                        if (last.summary == null) {
+                                            last.summary = description_short;
+                                        } else if (std.mem.eql(u8, last.summary.?, description_short)) {
+                                            // Allow double summary declarations if they are the same string
+                                            // TODO handle better
+                                            allocator.free(description_short);
+                                        } else {
+                                            scanner.source_invalid_err = .clobber;
+                                            return error.InvalidWaylandXML;
+                                        }
+                                    },
+                                    else => unreachable,
+                                }
+                            },
+                            else => comptime unreachable,
                         }
                     },
 
@@ -2557,7 +2683,7 @@ fn pushStartElement(
 
             for (0..attribute_count) |attribute_index| {
                 const attr_name = scanner.attribute_names.at(attribute_index).?;
-                const attr_value = scanner.attribute_names.at(attribute_index).?;
+                const attr_value = scanner.attribute_values.at(attribute_index).?;
 
                 if ( mem.eql(u8, "name", attr_name) ) {
                     if (name == null) {
@@ -2643,6 +2769,7 @@ fn pushStartElement(
                     .name = name.?,
                     .value = value.?,
                     .summary = summary,
+                    .description = null,
                     .since = since,
                     .deprecated_since = deprecated_since,
                 });
@@ -2755,6 +2882,7 @@ fn pushStartElement(
                         .interface = interface,
                         .allow_null = allow_null,
                         .summary = summary,
+                        .description = null,
                         .@"enum" = @"enum",
                     });
                 },
@@ -2796,19 +2924,13 @@ fn pushEndElement(
             }
 
             const description_dest: *?[]const u8 = switch (top.?) {
-                .interface => try interface_dest: {
+                .interface => interface_dest: {
                     const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
                     const last: *Interface.Parsing = &interfaces[interfaces.len-1];
-
-                    if (last.description_long == null) {
-                        break :interface_dest &last.description_long;
-                    } else {
-                        scanner.source_invalid_err = .clobber;
-                        break :interface_dest error.InvalidWaylandXML;
-                    }
+                    break :interface_dest &last.description_long;
                 },
 
-                inline .request, .event, .@"enum" => |child_obj| try interface_child_dest: {
+                inline .request, .event, .@"enum" => |child_obj| interface_child_dest: {
                     const Parsing: type = switch (child_obj) {
                         .request => Request.Parsing,
                         .event => Event.Parsing,
@@ -2830,11 +2952,33 @@ fn pushEndElement(
                         @tagName(child_tag),
                     );
 
-                    if (last.description_long == null) {
-                        break :interface_child_dest &last.description_long;
-                    } else {
-                        scanner.source_invalid_err = .clobber;
-                        break :interface_child_dest error.InvalidWaylandXML;
+                    break :interface_child_dest &last.description_long;
+                },
+
+                inline .arg, .entry => |val_obj| object_child_dest: {
+                    const interfaces: []Interface.Parsing = protocols.items[protocols.items.len-1].interfaces.items;
+                    const last_interface: Interface.Parsing = interfaces[interfaces.len-1];
+                    const last_interface_child = last_interface.objects.items[last_interface.objects.items.len-1];
+                    switch (val_obj) {
+                        .arg => {
+                            switch (last_interface_child) {
+                                inline .request, .event => |obj| {
+                                    const last: *Arg = &obj.args.items[obj.args.items.len-1];
+                                    break :object_child_dest &last.description;
+                                },
+                                else => unreachable,
+                            }
+                        },
+                        .entry => {
+                            switch (last_interface_child) {
+                                .@"enum" => |obj| {
+                                    const last: *Entry = &obj.entries.items[obj.entries.items.len-1];
+                                    break :object_child_dest &last.description;
+                                },
+                                else => unreachable,
+                            }
+                        },
+                        else => unreachable,
                     }
                 },
 
@@ -2844,9 +2988,15 @@ fn pushEndElement(
                 },
             };
 
-            const description: []const u8 = try trimLiteralText(allocator, scanner.text_literal_buffer.items);
-            errdefer { if (description.len != 0) allocator.free(description); }
-            if (description.len != 0) description_dest.* = description;
+            if (description_dest.* == null) {
+                const description: []const u8 = try trimLiteralText(allocator, scanner.text_literal_buffer.items);
+                // TODO why are we checking for len == 0 here
+                errdefer { if (description.len != 0) allocator.free(description); }
+                if (description.len != 0) description_dest.* = description;
+            } else {
+                scanner.source_invalid_err = .clobber;
+                return error.InvalidWaylandXML;
+            }
         },
 
         .copyright => {
@@ -3303,10 +3453,12 @@ pub const Arg = struct {
     interface: ?[]const u8,
     allow_null: ?bool,
     summary: ?[]const u8,
+    description: ?[]const u8,
     @"enum": ?[]const u8,
 
     pub fn deinit(arg: Arg, allocator: Allocator) void {
         if (arg.@"enum") |@"enum"| allocator.free(@"enum");
+        if (arg.description) |description| allocator.free(description);
         if (arg.summary) |summary| allocator.free(summary);
         if (arg.interface) |interface| allocator.free(interface);
         allocator.free(arg.name);
@@ -3318,6 +3470,7 @@ pub const Arg = struct {
         interface: ?[]const u8,
         allow_null: ?bool,
         summary: ?[]const u8,
+        description: ?[]const u8,
         @"enum": ?[]const u8,
 
         pub const init: Parsing = .{
@@ -3326,11 +3479,13 @@ pub const Arg = struct {
             .interface = null,
             .allow_null = null,
             .summary = null,
+            .description = null,
             .@"enum" = null,
         };
 
         pub fn deinit(parsing: *Parsing, allocator: Allocator) void {
             if (parsing.@"enum") |@"enum"| allocator.free(@"enum");
+            if (parsing.description) |description| allocator.free(description);
             if (parsing.summary) |summary| allocator.free(summary);
             if (parsing.interface) |interface| allocator.free(interface);
             if (parsing.name) |name| allocator.free(name);
@@ -3344,6 +3499,7 @@ pub const Arg = struct {
                 .interface = parsing.interface,
                 .allow_null = parsing.allow_null,
                 .summary = parsing.summary,
+                .description = parsing.description,
                 .@"enum" = parsing.@"enum",
             };
         }
@@ -3376,12 +3532,14 @@ pub const Entry = struct {
     name: []const u8,
     value: []const u8,
     summary: ?[]const u8,
+    description: ?[]const u8,
     // TODO this appears rarely but is not incorporated in printed output
     since: ?VersionNumber,
     // TODO this appears rarely but is not incorporated in printed output
     deprecated_since: ?VersionNumber,
 
     pub fn deinit(entry: Entry, allocator: Allocator) void {
+        if (entry.description) |description| allocator.free(description);
         if (entry.summary) |summary| allocator.free(summary);
         allocator.free(entry.value);
         allocator.free(entry.name);
@@ -3391,6 +3549,7 @@ pub const Entry = struct {
         name: ?[]const u8,
         value: ?[]const u8,
         summary: ?[]const u8,
+        description: ?[]const u8,
         since: ?VersionNumber,
         deprecated_since: ?VersionNumber,
 
@@ -3398,11 +3557,13 @@ pub const Entry = struct {
             .name = null,
             .value = null,
             .summary = null,
+            .description = null,
             .since = null,
             .deprecated_since = null,
         };
 
         pub fn deinit(parsing: *Parsing, allocator: Allocator) void {
+            if (parsing.description) |description| allocator.free(description);
             if (parsing.summary) |summary| allocator.free(summary);
             if (parsing.value) |value| allocator.free(value);
             if (parsing.name) |name| allocator.free(name);
@@ -3414,6 +3575,7 @@ pub const Entry = struct {
                 .name = parsing.name orelse return error.MissingAttribute,
                 .value = parsing.value orelse return error.MissingAttribute,
                 .summary = parsing.summary,
+                .description = parsing.description,
                 .since = parsing.since,
                 .deprecated_since = parsing.deprecated_since,
             };
@@ -3639,7 +3801,7 @@ fn validateTagPosition(scanner: *Scanner, top: ?Tag, tag: Tag) error{InvalidWayl
         .description => {
             if (top) |t| {
                 switch (t) {
-                    .interface, .request, .event, .@"enum" => {},
+                    .interface, .request, .event, .@"enum", .arg, .entry => {},
                     else => {
                         scanner.source_invalid_err = .invalid_description_parent;
                         return error.InvalidWaylandXML;
