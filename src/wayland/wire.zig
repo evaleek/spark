@@ -53,7 +53,7 @@ pub fn writeRequestAll(
 
 pub fn argsFds(args: anytype) [expectedAncillaryCount(@TypeOf(args))]Fd {
     const Args = @TypeOf(args);
-    var fds: [expectedAncillaryCount]Fd = undefined;
+    var fds: [expectedAncillaryCount(@TypeOf(args))]Fd = undefined;
     comptime var i: usize = 0;
     inline for (@typeInfo(Args).@"struct".fields) |field| {
         if (field.type == File) {
@@ -110,7 +110,12 @@ pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
                     ( (info == .@"struct" and info.@"struct".layout == .@"packed") or info == .@"enum" )
                     and @bitSizeOf(Object) == 32
                 ) {
-                    try writer.writeInt(u32, @bitCast(arg), endian);
+                    const int: u32 = switch (info) {
+                        .@"enum" => @intFromEnum(arg),
+                        .@"struct" => @bitCast(arg),
+                        else => unreachable,
+                    };
+                    try writer.writeInt(u32, int, endian);
                 } else {
                     const is_optional = info == .optional;
                     const ObjectNoOptional = if (is_optional) info.optional.child else Object;
@@ -135,7 +140,9 @@ pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
                 }
             },
             Array => try writeArrayArg(writer, arg),
-            File => @panic("TODO"),
+            // Assume caller has queued file descriptors for transfer
+            // before or with the `sendmsg` which sends the last byte of this message
+            File => {},
         }
     }
 }
@@ -434,6 +441,12 @@ pub inline fn payloadSize(args: anytype) u16 {
                 const ObjectNoOptional = if (is_optional) info.optional.child else Object;
                 if (comptime isProtocolInterface(ObjectNoOptional)) {
                     size += 4;
+                } else if (@bitSizeOf(Object) == 32) {
+                    switch (info) {
+                        .@"enum", .@"struct" => size += 4,
+                        else => comptime unreachable,
+                    }
+
                 } else {
                     @compileError(comptimePrint(
                         "expected a {s} interface container, found {s}",
@@ -441,7 +454,8 @@ pub inline fn payloadSize(args: anytype) u16 {
                     ));
                 }
             },
-            File => @panic("TODO"),
+            // File descriptors are transferred out-of-band (as cmsg)
+            File => {},
         }
     }
     assert(size % 4 == 0);

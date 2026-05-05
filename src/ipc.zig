@@ -680,7 +680,7 @@ pub const ControlBuffer = struct {
     pub fn append(control: ControlBuffer, data: []const u8) error{OutOfMemory}!void {
         const hdr = control.getHeader();
         const dest = control.buffer[hdr.len..];
-        if (dest.len <= data.len) {
+        if (dest.len >= data.len) {
             @memcpy(dest[0..data.len], data);
             hdr.len += data.len;
         } else {
