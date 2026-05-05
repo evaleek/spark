@@ -636,6 +636,62 @@ pub const DomainStream = struct {
     };
 };
 
+pub const AnonymousFile = struct {
+    fd: system.fd_t,
+
+    // TODO be less lazy about possible errors from these fns
+
+    /// Uses `memfd_create`, which is Linux 3.17+ only.
+    /// `name` need not be globally unique (only displayed for debug purposes at `/proc/<pid>/fd/`).
+    pub fn createMemFd(name: []const u8, length: system.off_t) std.posix.MemFdCreateError!AnonymousFile {
+        const fd: system.fd_t = try std.posix.memfd_create(name, system.MFD.CLOEXEC);
+        errdefer closeFd(fd);
+        trunc: while (true) {
+            switch (system.errno(system.ftruncate(fd, length))) {
+                .SUCCESS => break :trunc,
+                .INTR => continue :trunc,
+                .INVAL => |e| return errnoBug(e),
+                .FBIG => |e| return errnoBug(e),
+                .IO => |e| return errnoBug(e), // TODO confirm
+                .BADF => |e| return errnoBug(e),
+                else => |e| return errnoBug(e),
+            }
+        }
+        return .{ .fd = fd };
+    }
+
+    /// Uses `shm_open`, and appends the `name` with the current process PID
+    /// to guarantee global uniqueness.
+    ///
+    /// Better POSIX portability than `memfd_create`.
+    pub fn createShm(name: []const u8, size: usize) AnonymousFile {
+        _ = name;
+        _ = size;
+        @compileError("TODO");
+    }
+
+    pub fn closeMemFd(file: AnonymousFile) void {
+        closeFd(file.fd);
+    }
+
+    pub fn map(file: AnonymousFile, offset: u64, length: usize) std.posix.MMapError![]align(std.heap.page_size_min) u8 {
+        // TODO i just copied flags from https://wayland-book.com/surfaces/shared-memory.html confirm are good
+        const memory = try std.posix.mmap(
+            null,
+            length,
+            .{ .READ = true, .WRITE = true, },
+            .{ .TYPE = .SHARED },
+            file.fd,
+            offset,
+        );
+        return memory;
+    }
+
+    pub fn unmap(memory: []align(std.heap.page_size_min) u8) void {
+        std.posix.munmap(memory);
+    }
+};
+
 // TODO this is currently tightly packing fds when it should be aware of their alignment?
 
 /// A control buffer containing a single `SCM_RIGHTS` message,
