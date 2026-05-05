@@ -283,7 +283,7 @@ pub const DomainStream = struct {
 
     /// Send as much data queued for sending in the `TransferQueue`
     /// as the stream will accept in one call.
-    pub fn flushQueue(
+    pub fn drainQueue(
         stream: DomainStream,
         queue: *TransferQueue,
         options: SendReceiveOptions,

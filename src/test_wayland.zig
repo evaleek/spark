@@ -1,12 +1,4 @@
 var global_gpa: std.heap.DebugAllocator(.{}) = .init;
-var read_buffer: [4096]u8 = undefined;
-var write_buffer: [4096]u8 = undefined;
-var read_control_buffer: [4096]u8 align(ipc.cmsg.algn) = undefined;
-var write_control_buffer: [ipc.DomainStream.ControlBuffer.sizeFromCapacity(posix.system.fd_t, fd_max_count)]u8 align(ipc.cmsg.algn) = undefined;
-var read_fd_buffer: [fd_max_count]posix.system.fd_t = undefined;
-
-const fd_max_count = 32;
-const ObjectMap = std.hash_map.AutoHashMapUnmanaged(u32, wire.protocol.AnyObject);
 
 pub fn main(init: std.process.Init.Minimal) !void {
     defer {
@@ -16,7 +8,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
     const allocator = global_gpa.allocator();
 
-    const display: ipc.DomainStream = conn: {
+    var display: Display = undefined;
+
+    display.stream = conn: {
         if (spark.wayland.getPreconnectedSocket(init.environ)) |res| {
             if (res) |fd| {
                 std.log.info("found preconnected wayland display socket at fd {d}", .{fd});
@@ -43,222 +37,386 @@ pub fn main(init: std.process.Init.Minimal) !void {
         std.log.info("successfully connected to domain stream at {s}", .{ @as([*:0]const u8, @ptrCast(&addr.path)) });
         break :conn stream;
     };
-    defer ipc.closeFd(display.socket);
+    defer ipc.closeFd(display.stream.socket);
 
-    var transfer_queue: ipc.TransferQueue = try .create(.{});
-    defer transfer_queue.deinit();
+    display.transfer_queue = try .create(.{});
+    defer display.transfer_queue.deinit();
 
-    testDisplayConnection(allocator, display, &transfer_queue) catch |err| switch (err) {
+    _ = allocator;
+
+    testDisplayConnection(&display) catch |err| switch (err) {
         error.EndOfStream => std.log.info("encountered end of stream", .{}),
         else => |e| return e,
     };
-
-
-    //const display: ipc.DomainStream = conn: {
-    //    const display_path = try spark.wayland.discoverDisplayPath(allocator)
-    //        orelse return error.HostDown;
-    //    log.debug("trying Wayland display at {s}", .{display_path});
-    //    defer allocator.free(display_path);
-    //    break :conn try .open(display_path, .{});
-    //};
-    //defer ipc.closeFd(display.socket);
-
-    //var reader = display.reader(&read_buffer, &read_control_buffer, &read_fd_buffer);
-    //var writer = display.writer(&write_buffer, &write_control_buffer);
-
-    //testDisplayConnection(allocator, &writer.interface, &reader.interface) catch |err| switch (err) {
-    //    error.ReadFailed => return reader.err.?,
-    //    error.WriteFailed => return writer.err.?,
-    //    error.EndOfStream => std.log.info("encountered end of stream", .{}),
-    //    else => |e| return e,
-    //};
 }
 
-fn testDisplayConnection(gpa: Allocator, display: ipc.DomainStream, transfer_queue: *ipc.TransferQueue) !void {
-    var object_map: ObjectMap = .empty;
-    defer object_map.deinit(gpa);
-    const init_sync_id = 3;
-    const registry_id = 2;
-    {
-        var writer: Io.Writer = .fixed(transfer_queue.sendDataWritable());
+fn testDisplayConnection(display: *Display) !void {
+    var next_id_counter: u32 = 1;
+    var object_map: Object.Map = .empty;
+    var registry_proxy: RegistryProxy = .empty;
 
-        try object_map.putNoClobber(gpa, registry_id, .{ .wayland = .registry });
-        try wire.writeMessage(&writer, wl.Display{ .id = wire.object_id.display }, .{ .get_registry = .{
+    object_map.bind(.display, try allocObjectId(&next_id_counter));
+
+    {
+        const registry_id = try allocObjectId(&next_id_counter);
+        object_map.bind(.registry, registry_id);
+        try display.pushRequest(.wl_display, .{ .id = wire.object_id.display }, .{ .get_registry = .{
             .registry = .{ .id = registry_id },
         }});
-
-        try object_map.putNoClobber(gpa, init_sync_id, .{ .wayland = .callback });
-        try wire.writeMessage(&writer, wl.Display{ .id = wire.object_id.display }, .{ .sync = .{
+    }
+    {
+        const init_sync_id = try allocObjectId(&next_id_counter);
+        object_map.bind(.init_sync, init_sync_id);
+        try display.pushRequest(.wl_display, .{ .id = wire.object_id.display }, .{ .sync = .{
             .callback = .{ .id = init_sync_id },
         }});
-
-        transfer_queue.sendDataPublish(writer.buffered().len);
     }
-    while (transfer_queue.send.len() > 0) try display.flushQueue(transfer_queue, .{});
+    try display.flush();
 
-    var registry_compositor_name: ?u32 = null;
-    var registry_compositor_version: ?u32 = null;
-    var registry_shm_name: ?u32 = null;
-    var registry_shm_version: ?u32 = null;
-
-    init_reg_emit: while (true) {
-        log.info("trying next message...", .{});
-        while (
-            transfer_queue.receivedDataPeek().len < @sizeOf(wire.Header)
-            or transfer_queue.receivedDataPeek().len < std.mem.bytesToValue(wire.Header, transfer_queue.receivedDataPeek()[0..@sizeOf(wire.Header)]).info.size
-        ) {
-            try display.fillQueue(transfer_queue, .{});
-        }
-        const header = std.mem.bytesToValue(wire.Header, transfer_queue.receivedDataPeek()[0..@sizeOf(wire.Header)]);
-        if (header.info.size % 4 != 0) unreachable; // TODO not acceptable as UB (need to always check)
-        const payload_size = header.info.size - @sizeOf(wire.Header);
-        const payload: []const u8 = transfer_queue.receivedDataPeek()[@sizeOf(wire.Header)..][0..payload_size];
-        const obj: wire.protocol.AnyObject =
-            if (header.object == wire.object_id.display) .{ .wayland = .display }
-            else object_map.get(header.object).?;
-        switch (obj) {
-            inline else => |o, protocol| { switch (o) { inline else => |object| {
-                const Obj = object.ToInterface();
-                if (@hasDecl(Obj, "Event")) {
-                    const message = try wire.messageFromPayload(
-                        Obj.Event.Message,
-                        header.info.operation,
-                        payload,
-                        &.{},
-                    );
-                    switch (message) {
-                        inline else => |event| log.info("got {t}.{t}.{t}: {f}", .{
-                            protocol,
-                            o,
-                            std.meta.activeTag(message),
-                            wire.formatAlt(event),
-                        }),
-                    }
-                    if (Obj == wl.Registry and message == .global) {
-                        const interface_name = message.global.interface.toSlice();
-                        if (wire.mapInterfaceName(interface_name)) |iface| {
-                            log.info("mapped \"{s}\"", .{interface_name});
-                            if (std.meta.eql(iface, .{ .wayland = .compositor })) {
-                                if (registry_compositor_name != null) unreachable;
-                                if (registry_compositor_version != null) unreachable;
-                                registry_compositor_name = message.global.name;
-                                registry_compositor_version = message.global.version;
-                            } else if (std.meta.eql(iface, .{ .wayland = .shm })) {
-                                if (registry_shm_name != null) unreachable;
-                                if (registry_shm_version != null) unreachable;
-                                registry_shm_name = message.global.name;
-                                registry_shm_version = message.global.version;
-                            }
-                        } else {
-                            log.warn("unrecognized interface name \"{s}\"", .{interface_name});
-                        }
-                    }
-                    if (Obj == wl.Callback and message == .done) {
-                        //if (!object_map.remove(header.object)) unreachable;
-                        if (header.object == init_sync_id) {
-                            log.info("received end of registry global emit (id {d})", .{init_sync_id});
-                            break :init_reg_emit;
-                        }
-                    }
-                } else {
-                    unreachable;
-                }
-            }}},
-        }
-        transfer_queue.receivedDataToss(header.info.size);
-    }
-
-    const registry_compositor_name_final: u32 = registry_compositor_name orelse return error.MissingWaylandGlobals;
-    const registry_compositor_version_final: u32 = registry_compositor_version orelse return error.MissingWaylandGlobals;
-    const registry_shm_name_final: u32 = registry_shm_name orelse return error.MissingWaylandGlobals;
-    const registry_shm_version_final: u32 = registry_shm_version orelse return error.MissingWaylandGlobals;
-
-    _ = registry_compositor_name_final;
-    _ = registry_compositor_version_final;
-    _ = registry_shm_name_final;
-    _ = registry_shm_version_final;
-
-    const compositor_id = 4;
-    const shm_id = 5;
-    const surface_id = 6;
     {
-        var writer: Io.Writer = .fixed(transfer_queue.sendDataWritable());
-
-        try object_map.putNoClobber(gpa, compositor_id, .{ .wayland = .compositor });
-        try wire.writeMessage(&writer, wl.Registry{ .id = registry_id }, .{ .bind = .{
-            .name = registry_compositor_name.?,
-            .id = .{
-                .name = .fromSlice("wl_compositor"),
-                .version = @min(
-                    registry_compositor_version.?,
-                    wire.protocol.wayland.Compositor.version,
+        var in_roundtrip: bool = true;
+        while (in_roundtrip) {
+            const header, const payload = try display.peekNextEventRaw();
+            if (header.info.size % 4 != 0) return error.InvalidMessageSize;
+            const object = object_map.getObject(header.object) orelse return error.UnmappedObject;
+            switch (object) {
+                .display => try dispatchDisplayEvent(
+                    &object_map,
+                    try display.parseEvent(.wl_display, header, payload),
                 ),
+                .registry => try dispatchRegistryEvent(
+                    &registry_proxy,
+                    try display.parseEvent(.wl_registry, header, payload),
+                    true,
+                ),
+                .init_sync => switch (try display.parseEvent(.wl_callback, header, payload)) {
+                    .done => |done| {
+                        if (in_roundtrip == false) unreachable;
+                        log.info("finished init roundtrip (0x{x})", .{ done.callback_data });
+                        in_roundtrip = false;
+                    },
+                },
+                .compositor => unreachable,
+                .shm => unreachable,
+            }
+            display.tossBuffered(header.info.size);
+        }
+    }
+
+    if (!registry_proxy.hasAll()) return error.MissingWaylandGlobals;
+
+    {
+        const compositor_id = try allocObjectId(&next_id_counter);
+        object_map.bind(.compositor, compositor_id);
+        const registry_entry = registry_proxy.get(.wl_compositor)
+            orelse return error.MissingWaylandGlobals;
+        try display.pushRequest(.wl_registry, .{ .id = object_map.getId(.registry).? }, .{ .bind = .{
+            .name = registry_entry.name,
+            .id = .{
+                .name = .fromSlice(@tagName(.wl_compositor)),
+                // TODO consume actual version somewhere
+                .version = @min(registry_entry.version, wire.protocol.wayland.Compositor.version),
                 .id = compositor_id,
             },
         }});
-        try object_map.putNoClobber(gpa, shm_id, .{ .wayland = .shm });
-        try wire.writeMessage(&writer, wl.Registry{ .id = registry_id }, .{ .bind = .{
-            .name = registry_shm_name.?,
+    }
+    {
+        const shm_id = try allocObjectId(&next_id_counter);
+        object_map.bind(.shm, shm_id);
+        const registry_entry = registry_proxy.get(.wl_shm)
+            orelse return error.MissingWaylandGlobals;
+        try display.pushRequest(.wl_registry, .{ .id = object_map.getId(.registry).? }, .{ .bind = .{
+            .name = registry_entry.name,
             .id = .{
-                .name = .fromSlice("wl_shm"),
-                .version = @min(
-                    registry_shm_version.?,
-                    wire.protocol.wayland.Shm.version,
-                ),
+                .name = .fromSlice(@tagName(.wl_shm)),
+                // TODO consume actual version somewhere
+                .version = @min(registry_entry.version, wire.protocol.wayland.Shm.version),
                 .id = shm_id,
             },
         }});
-        try wire.writeMessage(&writer, wl.Compositor{ .id = compositor_id }, .{ .create_surface = .{
-            .id = .{ .id = surface_id },
-        }});
-
-        transfer_queue.sendDataPublish(writer.buffered().len);
     }
-    while (transfer_queue.send.len() > 0) try display.flushQueue(transfer_queue, .{});
+    try display.flush();
 
     while (true) {
-        log.info("trying next message...", .{});
-        while (
-            transfer_queue.receivedDataPeek().len < @sizeOf(wire.Header)
-            or transfer_queue.receivedDataPeek().len < std.mem.bytesToValue(wire.Header, transfer_queue.receivedDataPeek()[0..@sizeOf(wire.Header)]).info.size
-        ) {
-            try display.fillQueue(transfer_queue, .{});
+        const header, const payload = try display.peekNextEventRaw();
+        if (header.info.size % 4 != 0) return error.InvalidMessageSize;
+        const object = object_map.getObject(header.object) orelse return error.UnmappedObject;
+        switch (object) {
+            .display => try dispatchDisplayEvent(
+                &object_map,
+                try display.parseEvent(.wl_display, header, payload),
+            ),
+            .registry => try dispatchRegistryEvent(
+                &registry_proxy,
+                try display.parseEvent(.wl_registry, header, payload),
+                true,
+            ),
+            .init_sync => unreachable,
+            .compositor => unreachable,
+            .shm => switch (try display.parseEvent(.wl_shm, header, payload)) {
+                .format => |format| log.info("wl_shm offers format: {t}", .{format.format}),
+            },
         }
-        const header = std.mem.bytesToValue(wire.Header, transfer_queue.receivedDataPeek()[0..@sizeOf(wire.Header)]);
-        if (header.info.size % 4 != 0) unreachable; // TODO not acceptable as UB (need to always check)
-        const payload_size = header.info.size - @sizeOf(wire.Header);
-        const payload: []const u8 = transfer_queue.receivedDataPeek()[@sizeOf(wire.Header)..][0..payload_size];
-        const obj: wire.protocol.AnyObject =
-            if (header.object == wire.object_id.display) .{ .wayland = .display }
-            else object_map.get(header.object).?;
-        switch (obj) {
-            inline else => |o, protocol| { switch (o) { inline else => |object| {
-                const Obj = object.ToInterface();
-                if (@hasDecl(Obj, "Event")) {
-                    const message = try wire.messageFromPayload(
-                        Obj.Event.Message,
-                        header.info.operation,
-                        payload,
-                        &.{},
-                    );
-                    switch (message) {
-                        inline else => |event| log.info("got {t}.{t}.{t}: {f}", .{
-                            protocol,
-                            o,
-                            std.meta.activeTag(message),
-                            wire.formatAlt(event),
-                        }),
-                    }
-                } else {
-                    std.debug.panic("Obj {s} has no events", .{@typeName(Obj)});
-                }
-            }}},
-        }
-        transfer_queue.receivedDataToss(header.info.size);
+        display.tossBuffered(header.info.size);
     }
 
-    log.info("exiting", .{});
+    log.info("closing", .{});
 }
+
+fn dispatchDisplayEvent(
+    object_map: *Object.Map,
+    event: wire.protocol.wayland.Display.Event.Message,
+) (error{WaylandFatal})!void {
+    switch (event) {
+        .@"error" => |@"error"| {
+            const msg = @"error".message.toSlice();
+            const interface: ?wire.protocol.Interface =
+                if (object_map.getObject(@"error".object_id.id)) |obj| obj.toInterface()
+                else null;
+            if (interface) |iface| {
+                switch (iface) {
+                    inline else => |ifc| {
+                        const Obj = ifc.GetObject();
+                        const Error: ?type = get_err_type: {
+                            if (@hasDecl(Obj, "Error") and @typeInfo(Obj.Error) == .@"enum") {
+                                break :get_err_type Obj.Error;
+                            } else if (@hasDecl(Obj, "Error") and @hasDecl(Obj.Error, "Code") and @typeInfo(Obj.Error.Code) == .@"enum") {
+                                break :get_err_type Obj.Error.Code;
+                            } else {
+                                break :get_err_type null;
+                            }
+                        };
+                        if (Error) |Err| {
+                            switch (@as(Err, @enumFromInt(@"error".code))) {
+                                _ => log.err("{t} fatal (unsupported error code): {s}", .{ iface, msg }),
+                                else => |err| log.err("{t} fatal .{t}: {s}", .{ iface, err, msg }),
+                            }
+                        } else {
+                            log.err("{t} fatal: (missing error enum) {s}", .{ iface, msg });
+                        }
+                    },
+                }
+            } else {
+                log.err("unmapped object {d} fatal: {s}", .{ @"error".object_id.id, msg });
+            }
+            return error.WaylandFatal;
+        },
+        .delete_id => |delete_id| {
+            if (object_map.unbindId(delete_id.id)) |deleted_object| {
+                log.info("delete_id on object.{t}", .{deleted_object});
+            } else {
+                log.err("delete_id on object_id {d} (unmapped)", .{delete_id.id});
+            }
+        },
+    }
+}
+
+fn dispatchRegistryEvent(
+    proxy: *RegistryProxy,
+    event: wire.protocol.wayland.Registry.Event.Message,
+    need_all_globals: bool,
+) (error{LostGlobal} || RegistryProxy.Error)!void {
+    switch (event) {
+        .global => |global| proxy.put(global) catch |err| switch (err) {
+            error.UnsupportedInterface => log.debug("unrecognized global interface \"{s}\"", .{global.interface.toSlice()}),
+            else => |e| return e,
+        },
+        .global_remove => |remove| {
+            if (try proxy.putRemove(remove)) |removed_global| {
+                if (need_all_globals) {
+                    log.err("wl_display::global_remove {t} ({d})", .{ removed_global, remove.name });
+                } else {
+                    log.info("wl_display::global_remove {t} ({d})", .{ removed_global, remove.name });
+                }
+            } else {
+                log.err("unmapped wl_display::global_remove name {d}", .{remove.name});
+            }
+            if (need_all_globals) return error.LostGlobal;
+        },
+    }
+}
+
+const Object = enum {
+    display,
+    registry,
+    init_sync,
+    compositor,
+    shm,
+
+    pub fn toInterface(object: Object) wire.protocol.Interface {
+        return switch (object) {
+            .display => .wl_display,
+            .registry => .wl_registry,
+            .init_sync => .wl_callback,
+            .compositor => .wl_compositor,
+            .shm => .wl_shm,
+        };
+    }
+
+    pub const Map = spark.wayland.IdArray(Object);
+};
+
+const allocObjectId = spark.wayland.allocObjectIdMonotonic;
+
+const RegistryProxy = spark.wayland.RegistryProxy(RegistryGlobal);
+const RegistryGlobal = Subset(wire.protocol.Interface, &.{
+    .wl_compositor,
+    .wl_shm,
+});
+fn Subset(comptime E: type, comptime subset: []const E) type {
+    const info = @typeInfo(E).@"enum";
+    var names: [subset.len][]const u8 = undefined;
+    var values: [subset.len]info.tag_type = undefined;
+    for (subset, &names, &values) |tag, *name, *value| {
+        name.* = @tagName(tag);
+        value.* = @intFromEnum(tag);
+    }
+    return @Enum(info.tag_type, .exhaustive, &names, &values);
+}
+
+fn interfaceFromRegistryGlobal(global: RegistryGlobal) wire.protocol.Interface {
+    return @enumFromInt(@intFromEnum(global));
+}
+
+const Display = struct {
+    stream: ipc.DomainStream,
+    transfer_queue: ipc.TransferQueue,
+
+    pub const SendError = error{ AncillaryOverflow } || ipc.DomainStream.SendError;
+    pub const ReceiveError = error{ EndOfStream } || ipc.DomainStream.ReceiveError;
+
+    /// Asserts the stream was not opened in nonblocking mode.
+    pub fn drain(display: *Display) SendError!void {
+        const before_buffered_size = display.transfer_queue.send.len();
+        display.stream.drainQueue(&display.transfer_queue, .{}) catch |err| switch (err) {
+            error.WouldBlock => unreachable,
+            else => |e| return e,
+        };
+        log.debug("sent {d}B", .{ before_buffered_size - display.transfer_queue.send.len() });
+    }
+
+    /// Asserts the stream was not opened in nonblocking mode.
+    pub fn flush(display: *Display) SendError!void {
+        while (display.transfer_queue.send.len() != 0) try display.drain();
+    }
+
+    /// Adds the message to the queue, draining to make room if necessary.
+    ///
+    /// Asserts the stream was not opened in nonblocking mode.
+    pub fn pushRequest(
+        display: *Display,
+        comptime interface: wire.protocol.Interface,
+        object: interface.GetObject(),
+        message: interface.GetObject().Request.Message,
+    ) (error{SendBufferOverflow} || SendError)!void {
+        const message_size = @sizeOf(wire.Header) + switch (message) {
+            inline else => |args| wire.payloadSize(args),
+        };
+        log.debug("push request: {t}.{t} ({d}B)", .{ interface, std.meta.activeTag(message), message_size });
+        if (message_size > display.transfer_queue.send.capacity) return error.SendBufferOverflow;
+        while (display.transfer_queue.send.space() < message_size) try display.drain();
+        switch (message) {
+            inline else => |args| {
+                if (comptime wire.expectedAncillaryCount(@TypeOf(args)) > 0) {
+                    const fds = wire.argsFds(args);
+                    // TODO confirm: is error because fd buffer size should be the max possible in one batch
+                    display.transfer_queue.fd_send.appendFds(&fds) catch return error.AncillaryOverflow;
+                }
+            },
+        }
+        var writer: Io.Writer = .fixed(display.transfer_queue.sendDataWritable()[0..message_size]);
+        wire.writeRequestAll(&writer, interface, object, message) catch |err| switch (err) {
+            error.WriteFailed => unreachable,
+        };
+        if (writer.unusedCapacityLen() != 0) unreachable;
+        display.transfer_queue.sendDataPublish(message_size);
+    }
+
+    // TODO need error for if the display is trying to send us a message
+    // that there is not enough room in the receive buffer to fit the entirety of
+
+    /// Asserts the stream was not opened in nonblocking mode.
+    pub fn fill(display: *Display) ReceiveError!void {
+        display.stream.fillQueue(&display.transfer_queue, .{}) catch |err| switch (err) {
+            error.WouldBlock => unreachable,
+            else => |e| return e,
+        };
+    }
+
+    /// Return the header and raw payload of the next complete message,
+    /// blocking until the peer sends more data if there is not yet enough.
+    ///
+    /// If the peer is sending according to protocol,
+    /// positionally-corresponding fds part of the parsed message
+    /// will be in the receive queue when this returns.
+    ///
+    /// Asserts the stream was not opened in nonblocking mode.
+    pub fn peekNextEventRaw(display: *Display) ReceiveError!struct{ wire.Header, []const u8 } {
+        var received: ?struct { wire.Header, []const u8 } = display.peekNextEventBufferedRaw();
+        while (received == null) {
+            // We don't check for new data on `EndOfStream` because this only occurs when 0 bytes were read
+            try display.fill();
+            received = display.peekNextEventBufferedRaw();
+        }
+        return received.?;
+    }
+
+    /// Return the header and raw payload of the next complete buffered message
+    /// (available without streaming more data).
+    ///
+    /// If the peer is sending according to protocol,
+    /// positionally-corresponding fds part of the parsed message
+    /// will be in the receive queue when this returns.
+    pub fn peekNextEventBufferedRaw(display: *Display) ?struct { wire.Header, []const u8 } {
+        // TODO kind of failing to annotate alignment info here,
+        // we should be able to guarantee 4 (8?) alignment of this readable slice
+        var reader: Io.Reader = .fixed(display.transfer_queue.receivedDataPeek());
+        const header = reader.takeStruct(wire.Header, wire.endian) catch return null;
+        const message_size = header.info.size;
+        const payload_size = message_size - comptime @as(@TypeOf(message_size), @intCast(@sizeOf(wire.Header)));
+        const payload = reader.take(payload_size) catch return null;
+        return .{ header, payload };
+    }
+
+    /// Call this after getting, parsing, *and* using one peeked event
+    /// (lifetime of strings and arrays in the message end after tossed by this call),
+    /// passing the `size` value from the message header
+    /// (which should be equal to `@sizeOf(Header)` plus the payload size).
+    ///
+    /// Asserts `message_size` bytes are currently buffered.
+    pub fn tossBuffered(display: *Display, message_size: usize) void {
+        display.transfer_queue.receivedDataToss(message_size);
+    }
+
+    // TODO parseEvent needs variant that does not toss the fds per message
+    // but allows caller to accumulate fd taken count in a single dispatch
+    // and then toss them all after that.
+    // might need to modify the transfer_queue functions to add that
+    // (read-ahead peeking or something)
+
+    /// Given the `interface` type of the object id specified in `header`,
+    /// parse the raw message into the event type for that interface.
+    pub fn parseEvent(
+        display: *Display,
+        comptime interface: wire.protocol.Interface,
+        header: wire.Header,
+        payload: []const u8,
+    ) wire.MessageMalformation!interface.GetObject().Event.Message {
+        const event = try wire.eventFromPayload(
+            interface,
+            header.info.operation,
+            payload,
+            display.transfer_queue.fd_receive,
+        );
+        switch (event) {
+            inline else => |args| {
+                const fds_count = comptime wire.expectedAncillaryCount(@TypeOf(args));
+                if (fds_count > 0) display.transfer_queue.receivedFdsToss(fds_count);
+            }
+        }
+        return event;
+    }
+};
 
 // TODO document main constraint about ancillary fds in wayland:
 // you must `sendmsg` the FDs no later than the last byte of the message they belong to
@@ -270,12 +428,8 @@ fn testDisplayConnection(gpa: Allocator, display: ipc.DomainStream, transfer_que
 // TODO need to handle `wl_registry::global_remove`s for certain applications
 // but if just grabbing the compositor and input seat wayland shouldn't ever remove these
 
-const native_os = @import("builtin").os.tag;
-const native_endian = @import("builtin").target.cpu.arch.endian();
-
 const wl = wire.protocol.wayland;
 const wire = spark.wayland.wire;
-const Display = wire.protocol.wayland.Display;
 const ipc = spark.ipc;
 
 const system = posix.system;

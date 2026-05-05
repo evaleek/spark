@@ -51,6 +51,20 @@ pub fn writeRequestAll(
     }
 }
 
+pub fn argsFds(args: anytype) [expectedAncillaryCount(@TypeOf(args))]Fd {
+    const Args = @TypeOf(args);
+    var fds: [expectedAncillaryCount]Fd = undefined;
+    comptime var i: usize = 0;
+    inline for (@typeInfo(Args).@"struct".fields) |field| {
+        if (field.type == File) {
+            fds[i] = @field(args, field.name).descriptor;
+            i += 1;
+        }
+    }
+    if (i != fds.len) comptime unreachable;
+    return fds;
+}
+
 /// For a struct `args` whose fields are all arg types found in `protocol`,
 /// write the message payload bytes as they should appear
 /// immediately following the header.
@@ -76,10 +90,10 @@ pub fn writeArgsAll(writer: *Io.Writer, args: anytype) Io.Writer.Error!void {
                     try writer.writeInt(u32, 0, endian);
                 }
             },
-            protocol.Interface => @compileError("TODO"),
-            protocol.Interface.New => {
+            protocol.AnyObject => @compileError("TODO"),
+            protocol.AnyObject.New => {
                 comptime {
-                    const info = @typeInfo(protocol.Interface.New).@"struct";
+                    const info = @typeInfo(protocol.AnyObject.New).@"struct";
                     debug.assert(info.fields.len == 3);
                     debug.assert(std.mem.eql(u8, "name", info.fields[0].name));
                     debug.assert(std.mem.eql(u8, "version", info.fields[1].name));
@@ -216,7 +230,7 @@ pub fn argsFromPayload(
                 remaining = try payloadNext(remaining, ceilingMultiple(size, 4));
             },
 
-            protocol.Interface.New => @compileError(@typeName(Args) ++ ": TODO"),
+            protocol.AnyObject.New => @compileError(@typeName(Args) ++ ": TODO"),
 
             else => |Object| {
                 const info = @typeInfo(Object);
@@ -268,7 +282,7 @@ pub const MessageMalformation = error{
     /// The message may be invalidly formatted
     /// or the client may have been built with an outdated protocol.
     UnsupportedOperation,
-    /// The resolved message args contained more file descriptors
+    /// The resolved message args needed more file descriptors
     /// than there were present in the passed file descriptor buffer.
     AncillaryUnderflow,
 } || PayloadMalformation;
@@ -303,9 +317,9 @@ pub fn printArgs(writer: *std.Io.Writer, args: anytype) std.Io.Writer.Error!void
                     try writer.writeAll("null");
                 }
             },
-            protocol.Interface.New => {
+            protocol.AnyObject.New => {
                 comptime {
-                    const info = @typeInfo(protocol.Interface.New).@"struct";
+                    const info = @typeInfo(protocol.AnyObject.New).@"struct";
                     debug.assert(info.fields.len == 3);
                     debug.assert(std.mem.eql(u8, "name", info.fields[0].name));
                     debug.assert(std.mem.eql(u8, "version", info.fields[1].name));
@@ -402,9 +416,9 @@ pub inline fn payloadSize(args: anytype) u16 {
             String => size += 4 + ceilingMultiple(arg.len, 4),
             ?String => size += 4 + ( if (arg) |string| ceilingMultiple(string.len, 4) else 0 ),
             Array => size += 4 + ceilingMultiple(arg.len, 4),
-            protocol.Interface.New => {
+            protocol.AnyObject.New => {
                 comptime {
-                    const info = @typeInfo(protocol.Interface.New).@"struct";
+                    const info = @typeInfo(protocol.AnyObject.New).@"struct";
                     debug.assert(info.fields.len == 3);
                     debug.assert(std.mem.eql(u8, "name", info.fields[0].name));
                     debug.assert(std.mem.eql(u8, "version", info.fields[1].name));
