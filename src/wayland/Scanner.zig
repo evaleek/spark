@@ -671,11 +671,12 @@ pub fn writeProtocolSource(
                                             if (mem.eql(u8, interface_name, "wl_object")) {
                                                 try writer.writeAll("AnyWaylandObject");
                                             } else {
-                                                const parent_protocol_name: []const u8 = try find_parent: {
-                                                    for (protocols) |p| {
+                                                const parent_protocol_name: []const u8,
+                                                const parent_protocol_iface_prefix: ?[]const u8 = try find_parent: {
+                                                    for (protocols, interface_prefixes) |p, iface_pfx| {
                                                         for (p.interfaces) |i| {
                                                             if (mem.eql(u8, interface_name, i.name))
-                                                                break :find_parent p.name;
+                                                                break :find_parent .{ p.name, iface_pfx };
                                                         }
                                                     }
                                                     std.log.err("no interface matching {s}.{s}.{s} \"{s}\"", .{
@@ -689,7 +690,7 @@ pub fn writeProtocolSource(
 
                                                 const inner_upper_name = try upperName(
                                                     allocator,
-                                                    if (interface_prefix) |prefix| interface_name[prefix.len..]
+                                                    if (parent_protocol_iface_prefix) |prefix| interface_name[prefix.len..]
                                                     else interface_name,
                                                 );
                                                 defer allocator.free(inner_upper_name);
