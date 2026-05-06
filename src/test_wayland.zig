@@ -50,11 +50,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
     };
 }
 
-fn testDisplayConnection(display: *Display) !void {
-    var next_id_counter: u32 = 1;
-    var object_map: Object.Map = .empty;
-    var registry_proxy: RegistryProxy = .empty;
+// TODO a higher level display connection state encapsulation like this
+// should just internally handle, and not emit, any events
+// that have completely internal side effects like configure, ping, global updates etc,
+// and just pass a higher-level event type up to the user
 
+fn testDisplayConnection(display: *Display) !void {
     const surface_width: u32 = 200;
     const surface_height: u32 = 200;
     const surface_buffer_format: wire.protocol.wayland.Shm.Format.Code = .xrgb8888;
@@ -73,321 +74,176 @@ fn testDisplayConnection(display: *Display) !void {
         //shm_data[surface_buffer_size..][0..surface_buffer_size],
     };
 
-    object_map.bind(.display, try allocObjectId(&next_id_counter));
-    {
-        const registry_id = try allocObjectId(&next_id_counter);
-        object_map.bind(.registry, registry_id);
-        try display.pushRequest(.wl_display, .{ .id = wire.object_id.display }, .{ .get_registry = .{
-            .registry = .{ .id = registry_id },
-        }});
-    }
-    {
-        const init_sync_id = try allocObjectId(&next_id_counter);
-        object_map.bind(.init_sync, init_sync_id);
-        try display.pushRequest(.wl_display, .{ .id = wire.object_id.display }, .{ .sync = .{
-            .callback = .{ .id = init_sync_id },
-        }});
-    }
+    try display.hello();
+    try display.addRoundtrip();
     try display.flush();
 
     {
-        var in_roundtrip: bool = true;
-        while (in_roundtrip) {
-            const header, const payload = try display.peekNextEventRaw();
-            if (header.info.size % 4 != 0) return error.InvalidMessageSize;
-            const object = object_map.getObject(header.object) orelse return error.UnmappedObject;
+        var done: bool = false;
+        while (!done) {
+            const object, const event, const msg_size = try display.peekNextEvent();
             switch (object) {
-                .display => try dispatchDisplayEvent(
-                    &object_map,
-                    try display.parseEvent(.wl_display, header, payload),
-                ),
-                .registry => try dispatchRegistryEvent(
-                    &registry_proxy,
-                    try display.parseEvent(.wl_registry, header, payload),
-                    true,
-                ),
-                .init_sync => switch (try display.parseEvent(.wl_callback, header, payload)) {
-                    .done => |done| {
-                        if (in_roundtrip == false) unreachable;
-                        log.info("finished init roundtrip (0x{x})", .{ done.callback_data });
-                        in_roundtrip = false;
-                    },
-                },
-                .compositor => unreachable,
-                .xdg_wm_base => unreachable,
-                .surface => unreachable,
-                .xdg_surface => unreachable,
-                .xdg_toplevel => unreachable,
-                .shm => unreachable,
-                .shm_pool => unreachable,
-                .buffer_1, .buffer_2 => unreachable,
-            }
-            display.tossBuffered(header.info.size);
-        }
-    }
-
-    if (!registry_proxy.hasAll()) return error.MissingWaylandGlobals;
-
-    {
-        const compositor_id = try allocObjectId(&next_id_counter);
-        object_map.bind(.compositor, compositor_id);
-        const registry_entry = registry_proxy.get(.wl_compositor)
-            orelse return error.MissingWaylandGlobals;
-        try display.pushRequest(.wl_registry, .{ .id = object_map.getId(.registry).? }, .{ .bind = .{
-            .name = registry_entry.name,
-            .id = .{
-                .name = .fromSlice(@tagName(.wl_compositor)),
-                // TODO consume actual version somewhere
-                .version = @min(registry_entry.version, wire.protocol.wayland.Compositor.version),
-                .id = compositor_id,
-            },
-        }});
-    }
-    {
-        const xdg_wm_id = try allocObjectId(&next_id_counter);
-        object_map.bind(.xdg_wm_base, xdg_wm_id);
-        const registry_entry = registry_proxy.get(.xdg_wm_base)
-            orelse return error.MissingWaylandGlobals;
-        try display.pushRequest(.wl_registry, .{ .id = object_map.getId(.registry).? }, .{ .bind = .{
-            .name = registry_entry.name,
-            .id = .{
-                .name = .fromSlice(@tagName(.xdg_wm_base)),
-                // TODO consume actual version somewhere
-                .version = @min(registry_entry.version, wire.protocol.xdg_shell.WmBase.version),
-                .id = xdg_wm_id,
-            },
-        }});
-    }
-    {
-        const surface_id = try allocObjectId(&next_id_counter);
-        object_map.bind(.surface, surface_id);
-        try display.pushRequest(.wl_compositor, .{ .id = object_map.getId(.compositor).? }, .{ .create_surface = .{
-            .id = .{ .id = surface_id },
-        }});
-    }
-    {
-        const xdg_surface_id = try allocObjectId(&next_id_counter);
-        object_map.bind(.xdg_surface, xdg_surface_id);
-        try display.pushRequest(.xdg_wm_base, .{ .id = object_map.getId(.xdg_wm_base).? }, .{ .get_xdg_surface = .{
-            .id = .{ .id = xdg_surface_id },
-            .surface = .{ .id = object_map.getId(.surface).? },
-        }});
-    }
-    {
-        const xdg_toplevel_id = try allocObjectId(&next_id_counter);
-        object_map.bind(.xdg_toplevel, xdg_toplevel_id);
-        try display.pushRequest(.xdg_surface, .{ .id = object_map.getId(.xdg_surface).? }, .{ .get_toplevel = .{
-            .id = .{ .id = xdg_toplevel_id },
-        }});
-    }
-    try display.pushRequest(.wl_surface, .{ .id = object_map.getId(.surface).? }, .{ .commit = .{}});
-    try display.flush();
-
-    var configure_acc: ConfigureState = .empty;
-    var last_configure: ConfigureState = .empty;
-
-    {
-        var init_configure: bool = true;
-        while (init_configure) {
-            const header, const payload = try display.peekNextEventRaw();
-            if (header.info.size % 4 != 0) return error.InvalidMessageSize;
-            const object = object_map.getObject(header.object) orelse return error.UnmappedObject;
-            switch (object) {
-                .display => try dispatchDisplayEvent(
-                    &object_map,
-                    try display.parseEvent(.wl_display, header, payload),
-                ),
-                .registry => try dispatchRegistryEvent(
-                    &registry_proxy,
-                    try display.parseEvent(.wl_registry, header, payload),
-                    true,
-                ),
-                .init_sync => unreachable, // TODO should be error
-                .compositor => unreachable, // no events
-                .xdg_wm_base => switch (try display.parseEvent(.xdg_wm_base, header, payload)) {
-                    .ping => |ping| {
-                        log.info("got ping (0x{x})", .{ping.serial});
-                        try display.pushRequest(.xdg_wm_base, .{ .id = object_map.getId(.xdg_wm_base).? }, .{ .pong = .{
-                            .serial = ping.serial,
-                        }});
-                        try display.flush(); // TODO unbatched
-                        log.info("sent pong (0x{x})", .{ping.serial});
-                    },
-                },
-                .surface => switch (try display.parseEvent(.wl_surface, header, payload)) {
-                    inline else => |args, event| log.info("wl_surface.{t}: {f}", .{ event, wire.formatAlt(args) }),
-                },
-                .xdg_surface => switch (try display.parseEvent(.xdg_surface, header, payload)) {
-                    .configure => |configure| {
-                        log.info("got configure (0x{x})", .{configure.serial});
-                        if (!configure_acc.isComplete()) log.warn("xdg_surface.configure with incomplete state", .{});
-                        last_configure = configure_acc;
-                        configure_acc = .empty;
-
-                        try display.pushRequest(.xdg_surface, .{ .id = object_map.getId(.xdg_surface).? }, .{ .ack_configure = .{
-                            .serial = configure.serial,
-                        }});
-                        try display.flush(); // TODO unbatched
-                        log.info("acked configure (0x{x})", .{configure.serial});
-                        if (init_configure == true) {
-                            init_configure = false;
+                .sync => switch (event.wl_callback) {
+                    .done => |d| {
+                        if (done == false) {
+                            log.info("finished init roundtrip (0x{x})", .{d.callback_data});
+                            done = true;
                         } else {
                             unreachable;
                         }
                     },
                 },
-                .xdg_toplevel => switch (try display.parseEvent(.xdg_toplevel, header, payload)) {
-                    // TODO
-                    .configure => |configure| {
-                        if (configure_acc.size == null) {
-                            configure_acc.size = .{ configure.width, configure.height };
-                        } else {
-                            log.err("xdg_toplevel.configure state collision", .{});
-                        }
-                    },
-                    inline else => |args, event| log.info("xdg_toplevel.{t}: {f}", .{ event, wire.formatAlt(args) }),
+                inline .display, .registry => |o| {
+                    const interface = comptime o.toInterface();
+                    try display.dispatchDefault(interface, @field(event, @tagName(interface)));
                 },
-                .shm => unreachable,
-                .shm_pool => unreachable,
-                .buffer_1, .buffer_2 => unreachable,
+                else => unreachable,
             }
-            display.tossBuffered(header.info.size);
+            display.tossBuffered(msg_size);
         }
     }
-    log.info("received initial configure", .{});
+
+    try display.bindGlobal(.compositor);
+    try display.bindGlobal(.xdg_wm_base);
+    try display.addRequest(.compositor, .{ .create_surface = .{
+        .id = try display.mapObject(.surface),
+    }});
+    try display.addRequest(.xdg_wm_base, .{ .get_xdg_surface = .{
+        .id = try display.mapObject(.xdg_surface),
+        .surface = try display.getObject(.surface),
+    }});
+    try display.addRequest(.xdg_surface, .{ .get_toplevel = .{
+        .id = try display.mapObject(.xdg_toplevel),
+    }});
+    try display.addRequest(.surface, .{ .commit = .{} });
+    try display.flush();
+
+    var buf_window_configuration: WindowConfiguration = .new;
+    var last_window_configuration: WindowConfiguration = undefined;
 
     {
-        const shm_id = try allocObjectId(&next_id_counter);
-        object_map.bind(.shm, shm_id);
-        const registry_entry = registry_proxy.get(.wl_shm)
-            orelse return error.MissingWaylandGlobals;
-        try display.pushRequest(.wl_registry, .{ .id = object_map.getId(.registry).? }, .{ .bind = .{
-            .name = registry_entry.name,
-            .id = .{
-                .name = .fromSlice(@tagName(.wl_shm)),
-                // TODO consume actual version somewhere
-                .version = @min(registry_entry.version, wire.protocol.wayland.Shm.version),
-                .id = shm_id,
-            },
-        }});
+        var got_configure: bool = false;
+        while (!got_configure) {
+            const object, const event, const msg_size = try display.peekNextEvent();
+            if (object == .xdg_toplevel) {
+                buf_window_configuration.addEvent(event);
+            }
+            switch (object) {
+                inline .display, .registry, .xdg_wm_base => |o| {
+                    const interface = comptime o.toInterface();
+                    try display.dispatchDefault(interface, @field(event, @tagName(interface)));
+                },
+                .surface => switch (event.wl_surface) {
+                    inline else => |msg, e| log.info("wl_surface.{t}: {f}", .{ e, wire.formatAlt(msg) }),
+                },
+                .xdg_toplevel => switch (event.xdg_toplevel) {
+                    inline else => |msg, e| log.info("xdg_toplevel.{t}: {f}", .{ e, wire.formatAlt(msg) }),
+                },
+                .xdg_surface => switch (event.xdg_surface) {
+                    .configure => |configure| {
+                        last_window_configuration = buf_window_configuration;
+                        try display.addRequest(.xdg_surface, .{ .ack_configure = .{
+                            .serial = configure.serial,
+                        }});
+                        if (got_configure == false) {
+                            log.info("got initial xdg_surface.configure (0x{x})", .{configure.serial});
+                            got_configure = true;
+                        } else {
+                            unreachable;
+                        }
+                    },
+                },
+                else => unreachable,
+            }
+            display.tossBuffered(msg_size);
+        }
     }
+    // Flush because we just got the init configure and added the ack
+    try display.flush();
+
+    try display.bindGlobal(.shm);
+    try display.addRequest(.shm, .{ .create_pool = .{
+        .id = try display.mapObject(.shm_pool),
+        .fd = .{ .descriptor = shm_file.fd },
+        .size = @intCast(shm_size),
+    }});
     // Wayland compositors are required to support `.argb8888` and `.xrgb8888`,
     // so we pick the format without checking for support first
     // and let the display send the fatal error if it's missing.
-    {
-        const shm_pool_id = try allocObjectId(&next_id_counter);
-        object_map.bind(.shm_pool, shm_pool_id);
-        try display.pushRequest(.wl_shm, .{ .id = object_map.getId(.shm).? }, .{ .create_pool = .{
-            .id = .{ .id = shm_pool_id },
-            .fd = .{ .descriptor = shm_file.fd },
-            .size = @intCast(shm_size),
-        }});
-    }
-    {
-        const buffer_1_id = try allocObjectId(&next_id_counter);
-        //const buffer_2_id = try allocObjectId(&next_id_counter);
-        object_map.bind(.buffer_1, buffer_1_id);
-        try display.pushRequest(.wl_shm_pool, .{ .id = object_map.getId(.shm_pool).? }, .{ .create_buffer = .{
-            .id = .{ .id = buffer_1_id },
-            .offset = 0,
-            .width = surface_width,
-            .height = surface_height,
-            .stride = surface_buffer_stride,
-            .format = surface_buffer_format,
-        }});
-        //object_map.bind(.buffer_2, buffer_2_id);
-        //try display.pushRequest(.wl_shm_pool, .{ .id = object_map.getId(.shm_pool).? }, .{ .create_buffer = .{
-        //    .id = .{ .id = buffer_2_id },
-        //    .offset = surface_buffer_size,
-        //    .width = surface_width,
-        //    .height = surface_height,
-        //    .stride = surface_buffer_stride,
-        //    .format = surface_buffer_format,
-        //}});
-    }
-    try display.pushRequest(.wl_surface, .{ .id = object_map.getId(.surface).? }, .{ .attach = .{
-        .buffer = .{ .id = object_map.getId(.buffer_1).? },
+    try display.addRequest(.shm_pool, .{ .create_buffer = .{
+        .id = try display.mapObject(.buffer_1),
+        .offset = 0,
+        .width = surface_width,
+        .height = surface_height,
+        .stride = surface_buffer_stride,
+        .format = surface_buffer_format,
+    }});
+    //try display.addRequest(.shm_pool, .{ .create_buffer = .{
+    //    .id = try display.mapObject(.buffer_2),
+    //    .offset = surface_buffer_size,
+    //    .width = surface_width,
+    //    .height = surface_height,
+    //    .stride = surface_buffer_stride,
+    //    .format = surface_buffer_format,
+    //}});
+    try display.addRequest(.surface, .{ .attach = .{
+        .buffer = try display.getObject(.buffer_1),
         .x = 0,
         .y = 0,
     }});
-    try display.pushRequest(.wl_surface, .{ .id = object_map.getId(.surface).? }, .{ .damage_buffer = .{
+    try display.addRequest(.surface, .{ .damage_buffer = .{
         .x = 0,
         .y = 0,
         .width = std.math.maxInt(i32),
         .height = std.math.maxInt(i32),
     }});
-    try display.pushRequest(.wl_surface, .{ .id = object_map.getId(.surface).? }, .{ .commit = .{}});
+    try display.addRequest(.surface, .{ .commit = .{} });
     try display.flush();
 
     _ = surface_buffers;
 
-    while (true) {
-        const header, const payload = try display.peekNextEventRaw();
-        if (header.info.size % 4 != 0) return error.InvalidMessageSize;
-        const object = object_map.getObject(header.object) orelse return error.UnmappedObject;
-        switch (object) {
-            .display => try dispatchDisplayEvent(
-                &object_map,
-                try display.parseEvent(.wl_display, header, payload),
-            ),
-            .registry => try dispatchRegistryEvent(
-                &registry_proxy,
-                try display.parseEvent(.wl_registry, header, payload),
-                true,
-            ),
-            .init_sync => unreachable, // TODO should be error
-            .compositor => unreachable, // no events
-            .xdg_wm_base => switch (try display.parseEvent(.xdg_wm_base, header, payload)) {
-                .ping => |ping| {
-                    log.info("got ping (0x{x})", .{ping.serial});
-                    try display.pushRequest(.xdg_wm_base, .{ .id = object_map.getId(.xdg_wm_base).? }, .{ .pong = .{
-                        .serial = ping.serial,
-                    }});
-                    try display.flush(); // TODO unbatched
-                    log.info("sent pong (0x{x})", .{ping.serial});
-                },
-            },
-            .surface => switch (try display.parseEvent(.wl_surface, header, payload)) {
-                inline else => |args, event| log.info("wl_surface.{t}: {f}", .{ event, wire.formatAlt(args) }),
-            },
-            .xdg_surface => switch (try display.parseEvent(.xdg_surface, header, payload)) {
-                .configure => |configure| {
-                    log.info("got configure (0x{x})", .{configure.serial});
-                    if (!configure_acc.isComplete()) log.warn("xdg_surface.configure with incomplete state", .{});
-                    last_configure = configure_acc;
-                    configure_acc = .empty;
+    var need_flush: bool = false;
 
-                    try display.pushRequest(.xdg_surface, .{ .id = object_map.getId(.xdg_surface).? }, .{ .ack_configure = .{
+    while (true) {
+        const object, const event, const msg_size = try display.peekNextEvent();
+        if (object == .xdg_toplevel) {
+            buf_window_configuration.addEvent(event);
+        }
+        switch (object) {
+            inline .display, .registry, .xdg_wm_base => |o| {
+                const interface = comptime o.toInterface();
+                try display.dispatchDefault(interface, @field(event, @tagName(interface)));
+            },
+            .surface => switch (event.wl_surface) {
+                inline else => |msg, e| log.info("wl_surface.{t}: {f}", .{ e, wire.formatAlt(msg) }),
+            },
+            .xdg_toplevel => switch (event.xdg_toplevel) {
+                inline else => |msg, e| log.info("xdg_toplevel.{t}: {f}", .{ e, wire.formatAlt(msg) }),
+            },
+            .xdg_surface => switch (event.xdg_surface) {
+                .configure => |configure| {
+                    last_window_configuration = buf_window_configuration;
+                    try display.addRequest(.xdg_surface, .{ .ack_configure = .{
                         .serial = configure.serial,
                     }});
-                    try display.flush(); // TODO unbatched
-                    log.info("acked configure (0x{x})", .{configure.serial});
+                    need_flush = true;
                 },
             },
-            .xdg_toplevel => switch (try display.parseEvent(.xdg_toplevel, header, payload)) {
-                // TODO
-                .configure => |configure| {
-                    if (configure_acc.size == null) {
-                        configure_acc.size = .{ configure.width, configure.height };
-                    } else {
-                        log.err("xdg_toplevel.configure state collision", .{});
-                    }
-                },
-                inline else => |args, event| log.info("xdg_toplevel.{t}: {f}", .{ event, wire.formatAlt(args) }),
+            .shm => switch (event.wl_shm) {
+                //.format => |format| log.debug("wl_shm offers format: {t}", .{format.format}),
+                .format => {},
             },
-            .shm => switch (try display.parseEvent(.wl_shm, header, payload)) {
-                .format => |format| log.debug("wl_shm offers format: {t}", .{format.format}),
+            .buffer_1 => switch (event.wl_buffer) {
+                .release => {}, // TODO
             },
-            .shm_pool => unreachable, // no events
-            .buffer_1 => switch (try display.parseEvent(.wl_buffer, header, payload)) {
-                .release => log.info("buffer_1.release", .{}),
-            },
-            .buffer_2 => unreachable,
-            //.buffer_2 => switch (try display.parseEvent(.wl_buffer, header, payload)) {
-            //    .release => log.info("buffer_2.release", .{}),
-            //},
+            else => unreachable,
         }
-        display.tossBuffered(header.info.size);
+        display.tossBuffered(msg_size);
+
+        if (need_flush) {
+            try display.flush();
+            need_flush = false;
+        }
     }
 
     log.info("closing", .{});
@@ -466,23 +322,20 @@ fn dispatchRegistryEvent(
     }
 }
 
-const ConfigureState = struct {
-    size: ?[2]i32,
+const WindowConfiguration = struct {
+    pub const new: WindowConfiguration = .{};
 
-    pub const empty: ConfigureState = .{
-        .size = null,
-    };
-
-    pub fn isComplete(state: ConfigureState) bool {
-        if (state.size == null) return false;
-        return true;
+    pub fn addEvent(conf: *WindowConfiguration, event: wayland.AnyEvent) void {
+        // TODO
+        _ = &conf;
+        _ = event;
     }
 };
 
 const Object = enum {
     display,
     registry,
-    init_sync,
+    sync,
     compositor,
     xdg_wm_base,
     surface,
@@ -497,7 +350,7 @@ const Object = enum {
         return switch (object) {
             .display => .wl_display,
             .registry => .wl_registry,
-            .init_sync => .wl_callback,
+            .sync => .wl_callback,
             .compositor => .wl_compositor,
             .xdg_wm_base => .xdg_wm_base,
             .surface => .wl_surface,
@@ -511,6 +364,7 @@ const Object = enum {
 
     pub const Map = spark.wayland.IdArray(Object);
 };
+
 
 const allocObjectId = spark.wayland.allocObjectIdMonotonic;
 
@@ -535,12 +389,225 @@ fn interfaceFromRegistryGlobal(global: RegistryGlobal) wire.protocol.Interface {
     return @enumFromInt(@intFromEnum(global));
 }
 
+fn registryGlobalFromInterface(interface: wire.protocol.Interface) ?RegistryGlobal {
+    return std.enums.fromInt(RegistryGlobal, @intFromEnum(interface));
+}
+
 const Display = struct {
     stream: ipc.DomainStream,
     transfer_queue: ipc.TransferQueue,
 
+    next_id_counter: u32,
+    object_map: Object.Map,
+    registry_proxy: RegistryProxy,
+
     pub const SendError = error{ AncillaryOverflow } || ipc.DomainStream.SendError;
     pub const ReceiveError = error{ EndOfStream } || ipc.DomainStream.ReceiveError;
+    pub const RequestError = error{
+        /// The object passed as the request interface has no bound object id
+        ObjectUnmapped,
+    } || SendError;
+    pub const BindObjectError = error{
+        OutOfObjectIds,
+        ObjectAlreadyMapped,
+    };
+    pub const BindError = BindObjectError || RequestError;
+    pub const EventError = error{
+        /// The received id mapped to no known object
+        IdUnmapped,
+        InvalidMessageSize,
+    } || wire.MessageMalformation || ReceiveError;
+
+    /// Push the initial connection request (`wl_display::get_registry`)
+    /// and initialize object id state.
+    pub fn hello(display: *Display) (error{OutOfObjectIds} || SendError)!void {
+        display.next_id_counter = 2;
+        display.object_map = .empty;
+        display.registry_proxy = .empty;
+
+        display.object_map.bind(.display, wire.object_id.display);
+        const registry: wire.protocol.wayland.Registry.New = .{ .id = try allocObjectId(&display.next_id_counter) };
+        try display.writeRequest(
+            .wl_display,
+            .{ .id = wire.object_id.display },
+            .{ .get_registry = .{ .registry = registry } },
+        );
+        display.object_map.bind(.registry, registry.id);
+    }
+
+    pub fn addRoundtrip(display: *Display) BindError!void {
+        if (display.object_map.getId(.sync)) |id| {
+            log.err("failed to bind global {t}: already bound to id {d}", .{ .sync, id });
+            return error.ObjectAlreadyMapped;
+        }
+        const sync_id = try allocObjectId(&display.next_id_counter);
+        try display.addRequest(.display, .{ .sync = .{ .callback = .{ .id = sync_id } } });
+        display.object_map.bind(.sync, sync_id);
+    }
+
+    pub fn addRequest(
+        display: *Display,
+        comptime object: Object,
+        request: object.toInterface().GetObject().Request.Message,
+    ) RequestError!void {
+        if (display.object_map.getId(object)) |object_id| {
+            try display.writeRequest(object.toInterface(), .{ .id = object_id }, request);
+        } else {
+            log.err("failed to construct request: object {t} is unmapped", .{object});
+            return error.ObjectUnmapped;
+        }
+    }
+
+    // TODO ideally this would be coupled with the request that actually adds the message that binds the Object.New,
+    // so that it being internally mapped to the alloced id can only have the side effects on success
+    pub fn mapObject(display: *Display, comptime object: Object) BindObjectError!object.toInterface().GetObject().New {
+        if (display.object_map.getId(object)) |id| {
+            log.err("failed to bind object {t}: already bound to id {d}", .{ object, id });
+            return error.ObjectAlreadyMapped;
+        }
+        const new_id = try allocObjectId(&display.next_id_counter);
+        display.object_map.bind(object, new_id);
+        return .{ .id = new_id };
+    }
+
+    pub fn getObject(display: *const Display, comptime object: Object) (error{ObjectUnmapped})!object.toInterface().GetObject() {
+        if (display.object_map.getId(object)) |id| {
+            return .{ .id = id };
+        } else {
+            log.err("failed to get object {t}: not bound", .{ object });
+            return error.ObjectUnmapped;
+        }
+    }
+
+    pub fn bindGlobal(display: *Display, comptime object: Object) (error{GlobalUnnamed} || BindError)!void {
+        const interface: wire.protocol.Interface = comptime object.toInterface();
+        const global: RegistryGlobal = comptime registryGlobalFromInterface(interface)
+            orelse @compileError(std.fmt.comptimePrint(
+                "object .{t} (.{t}) has no enumerated global",
+                .{ object, interface },
+            ));
+        if (display.object_map.getId(object)) |id| {
+            log.err("failed to bind global {t}: already bound to id {d}", .{ global, id });
+            return error.ObjectAlreadyMapped;
+        }
+        if (display.registry_proxy.get(global)) |entry| {
+            const new_id = try allocObjectId(&display.next_id_counter);
+            // TODO errdefer dealloc object id
+            const interface_version: @TypeOf(entry.version) = interface.GetObject().version;
+            const compat_version = @min(interface_version, entry.version);
+            if (compat_version != interface_version) {
+                log.info("have {t} version {d}, while display has version {d}", .{
+                    interface,
+                    interface_version,
+                    entry.version,
+                });
+            }
+            try display.addRequest(.registry, .{ .bind = .{
+                .name = entry.name,
+                .id = .{
+                    .name = .fromSlice(@tagName(interface)),
+                    .version = compat_version,
+                    .id = new_id,
+                },
+            }});
+            display.object_map.bind(object, new_id);
+        } else {
+            log.err("failed to bind global {t}: no name in registry", .{global});
+            return error.GlobalUnnamed;
+        }
+    }
+
+    pub fn peekNextEvent(display: *Display) EventError!struct { Object, wayland.AnyEvent, u16 } {
+        const header, const payload = try display.peekNextEventRaw();
+        if (display.object_map.getObject(header.object)) |object| {
+            switch (object.toInterface()) {
+                inline else => |interface| {
+                    if (comptime @hasDecl(interface.GetObject(), "Event")) {
+                        const event = try display.parseEvent(interface, header, payload);
+                        return .{
+                            object,
+                            @unionInit(wayland.AnyEvent, @tagName(interface), event),
+                            header.info.size,
+                        };
+                    } else {
+                        // TODO should be impossible
+                        return .{
+                            object,
+                            @unionInit(wayland.AnyEvent, @tagName(interface), {}),
+                            header.info.size,
+                        };
+                    }
+                },
+            }
+        } else {
+            log.err("message {{ object: {d}, op: {d} }} ({d}B) maps to no known object", .{
+                header.object,
+                header.info.operation,
+                header.info.size,
+            });
+            return error.IdUnmapped;
+        }
+    }
+
+    // TODO define error well
+    pub fn dispatchDefault(
+        display: *Display,
+        comptime interface: wire.protocol.Interface,
+        event: interface.GetObject().Event.Message,
+    ) !void {
+        switch (interface) {
+            .wl_display => try dispatchDisplayEvent(&display.object_map, event),
+            .wl_registry => try dispatchRegistryEvent(&display.registry_proxy, event, true),
+            .xdg_wm_base => switch (event) {
+                // TODO immediately blocking for flush unbatched is not correct
+                // but still need to integrate dispatching with overall event loop structure
+                .ping => |ping| {
+                    try display.addRequest(.xdg_wm_base, .{ .pong = .{
+                        .serial = ping.serial,
+                    }});
+                    try display.flush();
+                },
+            },
+            else => |iface| @compileError("no default behavior defined for " ++ @tagName(iface)),
+        }
+    }
+
+    // TODO parseEvent needs variant that does not toss the fds per message
+    // but allows caller to accumulate fd taken count in a single dispatch
+    // and then toss them all after that.
+    // might need to modify the transfer_queue functions to add that
+    // (read-ahead peeking or something)
+
+    /// Given the `interface` type of the object id specified in `header`,
+    /// parse the raw message into the event type for that interface.
+    pub fn parseEvent(
+        display: *Display,
+        comptime interface: wire.protocol.Interface,
+        header: wire.Header,
+        payload: []const u8,
+    ) wire.MessageMalformation!interface.GetObject().Event.Message {
+        const event = wire.eventFromPayload(
+            interface,
+            header.info.operation,
+            payload,
+            display.transfer_queue.fd_receive,
+        ) catch |err| {
+            std.log.err("{t} parsing {t} event {d} ({d}B)", .{
+                err,
+                interface,
+                header.info.operation,
+                header.info.size,
+            });
+            return err;
+        };
+        switch (event) {
+            inline else => |args| {
+                const fds_count = comptime wire.expectedAncillaryCount(@TypeOf(args));
+                if (fds_count > 0) display.transfer_queue.receivedFdsToss(fds_count);
+            }
+        }
+        return event;
+    }
 
     /// Asserts the stream was not opened in nonblocking mode.
     pub fn drain(display: *Display) SendError!void {
@@ -560,17 +627,18 @@ const Display = struct {
     /// Adds the message to the queue, draining to make room if necessary.
     ///
     /// Asserts the stream was not opened in nonblocking mode.
-    pub fn pushRequest(
+    pub fn writeRequest(
         display: *Display,
         comptime interface: wire.protocol.Interface,
         object: interface.GetObject(),
         message: interface.GetObject().Request.Message,
-    ) (error{SendBufferOverflow} || SendError)!void {
+    ) SendError!void {
         const message_size = @sizeOf(wire.Header) + switch (message) {
             inline else => |args| wire.payloadSize(args),
         };
         log.debug("push request: {t}.{t} ({d}B)", .{ interface, std.meta.activeTag(message), message_size });
-        if (message_size > display.transfer_queue.send.capacity) return error.SendBufferOverflow;
+        // TODO this is not an error, message just has to be sent in multiple sends
+        if (message_size > display.transfer_queue.send.capacity) unreachable;
         while (display.transfer_queue.send.space() < message_size) try display.drain();
         switch (message) {
             inline else => |args| {
@@ -644,43 +712,6 @@ const Display = struct {
     pub fn tossBuffered(display: *Display, message_size: usize) void {
         display.transfer_queue.receivedDataToss(message_size);
     }
-
-    // TODO parseEvent needs variant that does not toss the fds per message
-    // but allows caller to accumulate fd taken count in a single dispatch
-    // and then toss them all after that.
-    // might need to modify the transfer_queue functions to add that
-    // (read-ahead peeking or something)
-
-    /// Given the `interface` type of the object id specified in `header`,
-    /// parse the raw message into the event type for that interface.
-    pub fn parseEvent(
-        display: *Display,
-        comptime interface: wire.protocol.Interface,
-        header: wire.Header,
-        payload: []const u8,
-    ) wire.MessageMalformation!interface.GetObject().Event.Message {
-        const event = wire.eventFromPayload(
-            interface,
-            header.info.operation,
-            payload,
-            display.transfer_queue.fd_receive,
-        ) catch |err| {
-            std.log.err("{t} parsing {t} event {d} ({d}B)", .{
-                err,
-                interface,
-                header.info.operation,
-                header.info.size,
-            });
-            return err;
-        };
-        switch (event) {
-            inline else => |args| {
-                const fds_count = comptime wire.expectedAncillaryCount(@TypeOf(args));
-                if (fds_count > 0) display.transfer_queue.receivedFdsToss(fds_count);
-            }
-        }
-        return event;
-    }
 };
 
 // TODO document main constraint about ancillary fds in wayland:
@@ -693,7 +724,7 @@ const Display = struct {
 // TODO need to handle `wl_registry::global_remove`s for certain applications
 // but if just grabbing the compositor and input seat wayland shouldn't ever remove these
 
-const wl = wire.protocol.wayland;
+const wayland = spark.wayland;
 const wire = spark.wayland.wire;
 const ipc = spark.ipc;
 

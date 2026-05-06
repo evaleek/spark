@@ -182,6 +182,7 @@ pub fn eventFromPayload(
         @compileError("invalidly exhaustive opcode enum " ++ @typeName(Operation));
     if (operation_info.tag_type != u16)
         @compileError("invalid backing integer " ++ @typeName(operation_info.tag_type) ++ " for opcode enum " ++ @typeName(Operation));
+    if (payload.len % 4 != 0) return error.InvalidMessageSize;
     switch (@as(Operation, @enumFromInt(opcode))) {
         inline else => |event| {
             const Args = @FieldType(Object.Event.Message, @tagName(event));
@@ -295,6 +296,8 @@ pub const MessageMalformation = error{
     /// The message may be invalidly formatted
     /// or the client may have been built with an outdated protocol.
     UnsupportedOperation,
+    /// The message size was not aligned to 4 bytes
+    InvalidMessageSize,
     /// The resolved message args needed more file descriptors
     /// than there were present in the passed file descriptor buffer.
     AncillaryUnderflow,

@@ -1,4 +1,21 @@
 pub const wire = @import("wayland/wire.zig");
+pub const protocol = wire.protocol;
+
+
+pub const AnyEvent = any_event: {
+    const names = std.meta.fieldNames(protocol.Interface);
+    var types: [names.len]type = undefined;
+    var attrs: [names.len]std.builtin.Type.UnionField.Attributes = undefined;
+    for (std.meta.tags(protocol.Interface), &types, &attrs) |interface, *@"type", *attr| {
+        const Object = interface.GetObject();
+        // TODO make interfaces with no events/requests an enum with no fields instead of absent
+        @"type".* = if (@hasDecl(Object, "Event")) Object.Event.Message else void;
+        attr.* = .{
+            .@"align" = @alignOf(@"type".*),
+        };
+    }
+    break :any_event @Union(.auto, protocol.Interface, names, &types, &attrs);
+};
 
 /// For a set of unique objects defined by an enum `Object`,
 /// map their bound ids by simple linear search.
