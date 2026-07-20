@@ -1,5 +1,6 @@
 /// Validation-light XML parsing for a generic schema.
 /// Simple scanning through opening tags, closing tags, attributes, and skipping comments and whitespace.
+/// Helper functions for printing parse trees as Zig source.
 ///
 /// Disallows comments within literal text sections.
 const xml_parsing = @This();
@@ -26,16 +27,39 @@ pub const ParseError = error{
 /// and it marks an unsupported encoding.
 pub fn tryPeekBom(reader: *Io.Reader) (error{UnsupportedEncoding} || Io.Reader.Error)!void {
     const bom: [2]u8 = (try reader.peekArray(2)).*;
-    if (bom == .{ 0xFF, 0xFE }) {
+    if (mem.eql(u8, &bom, &.{ 0xFF, 0xFE })) {
         log.err("encountered BOM 0xFFFE (UTF-16 Little Endian)", .{});
         return error.UnsupportedEncoding;
     }
-    if (bom == .{ 0xFE, 0xFF }) {
+    if (mem.eql(u8, &bom, &.{ 0xFE, 0xFF })) {
         log.err("encountered BOM 0xFEFF (UTF-16 Big Endian)", .{});
         return error.UnsupportedEncoding;
     }
     // Third possibility is 0xEFBBBF (UTF-8), which is assumed.
 }
+
+/// Returns an iterator which returns the text block line by line,
+/// with leading and trailing whitespace trimmed from each.
+pub fn splitTextLines(text: []const u8) TextLineIterator {
+    return .init(text);
+}
+
+pub const TextLineIterator = struct {
+    inner: mem.TokenIterator(u8, .any),
+
+    pub fn init(text: []const u8) TextLineIterator {
+        return .{ .inner = .{
+            .buffer = text,
+            .delimiter = &.{ '\n', '\r' },
+            .index = 0,
+        } };
+    }
+
+    pub fn next(iter: *TextLineIterator) ?[]const u8 {
+        const full_line = iter.inner.next() orelse return null;
+        return mem.trim(u8, full_line, &ascii.whitespace);
+    }
+};
 
 /// Advance seek to point to the next `'<'` that is not the start of a comment.
 pub fn discardPlaintext(reader: *Io.Reader) Io.Reader.Error!void {
@@ -44,6 +68,65 @@ pub fn discardPlaintext(reader: *Io.Reader) Io.Reader.Error!void {
         const was_empty_text = try discardEmptyText(reader);
         break :cont was_plaintext or was_empty_text;
     }) {}
+}
+
+pub fn isValidZigIdentifier(str: []const u8) bool {
+    if (std.zig.Token.keywords.get(str)) |_| return false;
+    return str.len >= 1 and
+        ( ascii.isLower(str[0]) or str[0] == '_' ) and
+        ( for (str[1..]) |c| {
+            switch (c) {
+                '0'...'9', 'a'...'z', '_' => {},
+                else => break false,
+            }
+        } else true )
+    ;
+}
+
+/// If the `str` is an invalid Zig identifier,
+/// allocates and returns `"@\"" ++ str ++ "\""`.
+pub fn decollideIdentifier(arena: Allocator, str: []const u8) (error{EmptyValue} || Allocator.Error)![]const u8 {
+    if (str.len == 0) return error.EmptyValue;
+    if (isValidZigIdentifier(str)) return str;
+    const buf = try arena.alloc(u8, str.len + 3);
+    buf[0..2].* = "@\"".*;
+    @memcpy(buf[2..][0..str.len], str);
+    buf[buf.len-1] = '"';
+    return buf;
+}
+
+pub fn decollideIdentifierNonempty(arena: Allocator, str: []const u8) Allocator.Error![]const u8 {
+    const id = decollideIdentifier(arena, str) catch |err| switch (err) {
+        error.OutOfMemory => |e| return e,
+        error.EmptyValue => unreachable,
+    };
+    return id;
+}
+
+// TODO could be an {f} wrapper
+pub fn caseSnakeToPascal(gpa: Allocator, str: []const u8) Allocator.Error![]const u8 {
+    const pascal_len = str.len - count: {
+        var count: usize = 0;
+        for (str) |c| {
+            if (c == '_') count += 1;
+        }
+        break :count count;
+    };
+    const pascal = try gpa.alloc(u8, pascal_len);
+    var src_idx: usize = 0;
+    var dst_idx: usize = 0;
+    while (dst_idx < pascal.len) {
+        if (str[src_idx] != '_') {
+            pascal[dst_idx] =
+                if (src_idx == 0 or str[src_idx-1] == '_')
+                    ascii.toUpper(str[src_idx])
+                else
+                    str[src_idx];
+            dst_idx += 1;
+        }
+        src_idx += 1;
+    }
+    return pascal;
 }
 
 /// Assumes the reader seek begins in plaintext
@@ -69,6 +152,10 @@ pub fn takeNode(
 
     const tag_name: []const u8 = try peekAnyDelimiterExclusive(reader, &([2]u8{ '>', '/' } ++ ascii.whitespace));
     reader.toss(tag_name.len);
+    if (mem.eql(u8, "?xml", tag_name)) {
+        try takeDeclaration(gpa, reader);
+        return takeNode(gpa, reader, possible_schema);
+    }
     inline for (possible_schema) |schema| {
         if (mem.eql(u8, schema.tag_name, tag_name)) {
             const parsed = try parseNodeAtAttrs(gpa, reader, schema);
@@ -95,7 +182,7 @@ fn parseNodeAtAttrs(
     // as long as that next token is not the tag close.
     var tag_close: TagClose = undefined;
     while (cont: {
-        if (try tryTakeTagClose(reader)) |close| {
+        if (try tryTakeTagClose(reader, '/')) |close| {
             tag_close = close;
             break :cont false;
         } else {
@@ -146,6 +233,29 @@ fn parseNodeAtAttrs(
     return parsed;
 }
 
+fn takeDeclaration(gpa: Allocator, reader: *Io.Reader) ParseError!void {
+    var tag_close: TagClose = undefined;
+    while (cont: {
+        if (try tryTakeTagClose(reader, '?')) |close| {
+            tag_close = close;
+            break :cont false;
+        } else {
+            break :cont true;
+        }
+    }) {
+        gpa.free(try takeAndDupeAttrName(gpa, reader));
+        _ = try takeAttrValue(reader);
+        // TODO check for encoding = UTF-8
+    }
+    switch (tag_close) {
+        .self_close => {},
+        .close => {
+            log.err("expected \"<?xml>\" declaration to end in \"?>\"", .{});
+            return error.XmlInvalid;
+        },
+    }
+}
+
 pub fn freeNode(
     gpa: Allocator,
     comptime schema: Schema,
@@ -172,7 +282,13 @@ pub fn freeNode(
     };
     inline for (reverse_attrs) |attr| {
         switch (attr.value) {
-            .string => if (@field(node, attr.name)) |string| gpa.free(string),
+            .string => {
+                if (attr.optional) {
+                    if (@field(node, attr.name)) |string| gpa.free(string);
+                } else {
+                    gpa.free(@field(node, attr.name));
+                }
+            },
             .int => {},
             .@"enum" => {},
         }
@@ -608,7 +724,7 @@ const TagClose = enum { close, self_close };
 /// Seek up to the next token.
 /// If the next token is the beginning of the tag close,
 /// take the tag close.
-fn tryTakeTagClose(reader: *Io.Reader) (error{XmlInvalid} || Io.Reader.Error)!?TagClose {
+fn tryTakeTagClose(reader: *Io.Reader, comptime preclose_char: u8) (error{XmlInvalid} || Io.Reader.Error)!?TagClose {
     _ = try discardWhitespace(reader);
     const first = try reader.peekByte();
     switch (first) {
@@ -616,13 +732,13 @@ fn tryTakeTagClose(reader: *Io.Reader) (error{XmlInvalid} || Io.Reader.Error)!?T
             reader.toss(1);
             return .close;
         },
-        '/' => {
+        preclose_char => {
             reader.toss(1);
             // It is valid for there to be whitespace, like this: `"<tag_name   /   >"`
             _ = try discardWhitespace(reader);
             const second = try reader.peekByte();
             if (second != '>') {
-                log.err("expected token after '/' to be '>', found '{c}'", .{ second });
+                log.err("expected token after '{c}' to be '>', found '{c}'", .{ preclose_char, second });
                 return error.XmlInvalid;
             }
             reader.toss(1);
@@ -633,7 +749,7 @@ fn tryTakeTagClose(reader: *Io.Reader) (error{XmlInvalid} || Io.Reader.Error)!?T
 }
 
 /// Seeks past all whitespace and comments.
-fn discardEmptyText(reader: *Io.Reader) Io.Reader.Error!bool {
+pub fn discardEmptyText(reader: *Io.Reader) Io.Reader.Error!bool {
     var discarded = false;
     while (cont: {
         const was_comment = try discardComment(reader);
@@ -646,7 +762,7 @@ fn discardEmptyText(reader: *Io.Reader) Io.Reader.Error!bool {
 }
 
 /// If seek sits at a comment, discards it and returns `true`.
-fn discardComment(reader: *Io.Reader) Io.Reader.Error!bool {
+pub fn discardComment(reader: *Io.Reader) Io.Reader.Error!bool {
     const first_four = reader.peekArray(4) catch |err| switch (err) {
         error.EndOfStream => return false,
         error.ReadFailed => |e| return e,
@@ -665,7 +781,7 @@ fn discardComment(reader: *Io.Reader) Io.Reader.Error!bool {
     return true;
 }
 
-fn discardWhitespace(reader: *Io.Reader) Io.Reader.Error!bool {
+pub fn discardWhitespace(reader: *Io.Reader) Io.Reader.Error!bool {
     var discarded: bool = false;
     while (ascii.isWhitespace(try reader.peekByte())) {
         reader.toss(1);
